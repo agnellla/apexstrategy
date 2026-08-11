@@ -21,6 +21,7 @@ from .clean import (
     STATUS_VSC_ENDING,
     classify_laps,
 )
+from .gaps import add_gaps
 from .load import RawSession
 
 #: Non-numeric ``ClassifiedPosition`` values mean the driver was not classified:
@@ -66,9 +67,7 @@ def build_results(raw: RawSession, laps: pd.DataFrame) -> pd.DataFrame:
         }
     ).reset_index(drop=True)
 
-    out["laps_completed"] = (
-        out["driver"].map(laps_done).fillna(0).astype(int)
-    )
+    out["laps_completed"] = out["driver"].map(laps_done).fillna(0).astype(int)
     out["total_laps"] = raw.total_laps
     return _with_ids(out, raw)
 
@@ -106,9 +105,9 @@ def _merge_weather(laps: pd.DataFrame, weather: pd.DataFrame) -> pd.DataFrame:
     left["_k"] = left["cumulative_time_s"].astype("float64")
     right["_k"] = right["time_s"].astype("float64")
 
-    merged = pd.merge_asof(
-        left.dropna(subset=["_k"]), right, on="_k", direction="nearest"
-    ).drop(columns=["_k", "time_s"])
+    merged = pd.merge_asof(left.dropna(subset=["_k"]), right, on="_k", direction="nearest").drop(
+        columns=["_k", "time_s"]
+    )
 
     # Laps with no timestamp cannot be matched; re-attach them with null weather.
     unmatched = left[left["_k"].isna()].drop(columns=["_k"])
@@ -139,8 +138,12 @@ def build_laps(raw: RawSession, weather: pd.DataFrame) -> pd.DataFrame:
             "is_pit_in": src["PitInTime"].notna(),
             "is_pit_out": src["PitOutTime"].notna(),
             "track_status": src["TrackStatus"].astype(str),
-            "is_deleted": src.get("Deleted", pd.Series(False, index=src.index)).fillna(False).astype(bool),
-            "is_accurate": src.get("IsAccurate", pd.Series(True, index=src.index)).fillna(False).astype(bool),
+            "is_deleted": src.get("Deleted", pd.Series(False, index=src.index))
+            .fillna(False)
+            .astype(bool),
+            "is_accurate": src.get("IsAccurate", pd.Series(True, index=src.index))
+            .fillna(False)
+            .astype(bool),
         }
     ).reset_index(drop=True)
 
@@ -150,9 +153,11 @@ def build_laps(raw: RawSession, weather: pd.DataFrame) -> pd.DataFrame:
     df["compound"] = df["compound"].replace({"NAN": "UNKNOWN", "NONE": "UNKNOWN", "": "UNKNOWN"})
     df["is_fresh_tyre"] = df["is_fresh_tyre"].astype("boolean")
 
+    df = _with_ids(df, raw)
+    # Gaps before cleaning: dirty-air exclusion depends on them.
+    df = add_gaps(df)
     df = classify_laps(df)
     df = df.drop(columns=["is_deleted", "is_accurate"])
-    df = _with_ids(df, raw)
     return _merge_weather(df, weather)
 
 
@@ -243,9 +248,17 @@ def build_pits(raw: RawSession, laps_src: pd.DataFrame, laps: pd.DataFrame) -> p
                 }
             )
 
-    out = pd.DataFrame(rows, columns=[
-        "driver", "stop_number", "lap", "pit_duration_s", "compound_fitted", "under_caution"
-    ])
+    out = pd.DataFrame(
+        rows,
+        columns=[
+            "driver",
+            "stop_number",
+            "lap",
+            "pit_duration_s",
+            "compound_fitted",
+            "under_caution",
+        ],
+    )
     out["under_caution"] = out["under_caution"].astype(bool)
     return _with_ids(out, raw)
 
@@ -260,9 +273,7 @@ def build_track_status(raw: RawSession, laps: pd.DataFrame) -> pd.DataFrame:
     """
     ts = raw.session.track_status
     if ts is None or len(ts) == 0:
-        return _with_ids(
-            pd.DataFrame(columns=["status", "message", "start_lap", "end_lap"]), raw
-        )
+        return _with_ids(pd.DataFrame(columns=["status", "message", "start_lap", "end_lap"]), raw)
 
     leader = laps.groupby("lap_number")["cumulative_time_s"].min().dropna().sort_index()
     lap_no = leader.index.to_numpy()

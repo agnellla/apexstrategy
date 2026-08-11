@@ -192,6 +192,16 @@ LAPS = TableSpec(
         ColumnSpec(name="is_fresh_tyre", kind="bool", nullable=True),
         ColumnSpec(name="stint_number", kind="int", min_value=1),
         ColumnSpec(name="position", kind="float", nullable=True, min_value=1, max_value=20),
+        # Reconstructed from cumulative lap time (Phase 3). Kept alongside FastF1's
+        # reported `position` so the two can be reconciled rather than conflated.
+        ColumnSpec(name="derived_position", kind="int", min_value=1, max_value=20),
+        ColumnSpec(name="gap_to_leader_s", kind="float", nullable=True, min_value=0),
+        # Null for the race leader, who has nobody ahead.
+        ColumnSpec(name="gap_ahead_s", kind="float", nullable=True, min_value=0),
+        # Gap entering the lap (end of the previous lap): causally prior to this lap's
+        # time, which end-of-lap gap is not. See gaps.add_gaps.
+        ColumnSpec(name="entering_gap_s", kind="float", nullable=True, min_value=0),
+        ColumnSpec(name="in_dirty_air", kind="bool"),
         ColumnSpec(name="is_pit_in", kind="bool"),
         ColumnSpec(name="is_pit_out", kind="bool"),
         ColumnSpec(name="track_status", kind="str", nullable=True),

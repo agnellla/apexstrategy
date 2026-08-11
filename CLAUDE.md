@@ -77,13 +77,27 @@ src/apexstrategy/
 Modules are created in the phase that first needs them — absent directories are
 deliberate, not missing work.
 
-## Store (6 tables, ~230 KB, `data/processed/`)
+## Store (6 tables, ~250 KB, `data/processed/`)
 
 `laps` (8,304) · `stints` (432) · `pits` (296) · `results` (140) · `weather` (1,137) ·
-`track_status` (29). **6,062 clean training laps** across the 6 non-Monaco circuits.
+`track_status` (29). **4,269 clean training laps** across the 6 non-Monaco circuits
+(59.2% clean-lap yield, after dirty-air filtering).
 
 Models read via `store.training_laps()` — it applies both `is_clean` and the Monaco
 exclusion so no model can forget D3.
+
+### Dirty air — a live decision for Phase 5
+
+`in_dirty_air` uses the gap entering the lap (end of lap N−1), **never** the end-of-lap
+gap. Using end-of-lap would be selection-biased: closing on the car ahead is what a fast
+lap looks like, so it would preferentially exclude fast laps and bias pace downward.
+Consequence: a car that starts a lap P2 and takes the lead during it *is* flagged, which
+is correct. Do not "fix" that.
+
+Excluding dirty-air laps costs **32% of otherwise-clean laps** at the 1.5 s threshold.
+An open alternative for Phase 5: retain those laps and add `entering_gap_s` as a pace-model
+covariate instead. That recovers the data *and* yields the traffic-penalty estimate the
+product's Phase 2 needs. Decide by comparing LORO error both ways — not yet settled.
 
 ## Data gotchas (all cost real debugging time)
 
@@ -101,9 +115,10 @@ exclusion so no model can forget D3.
 
 ## Phase status
 
-Done: **0** (repo/env), **1** (ingest + contracts).
-Next: **2+3 merged** (gaps -> dirty-air exclusion), then 4 (circuit constants),
-5 (pace model), 6 (RaceState), **7 (simulator + replay validation — the hard gate)**.
+Done: **0** (repo/env), **1** (ingest + contracts), **2+3** (gaps + dirty air, merged).
+Next: **4** (circuit constants: fuel β and pit loss, fitted per circuit with standard
+errors), 5 (pace model), 6 (RaceState), **7 (simulator + replay validation — the hard
+gate)**.
 
 Phase 7 is the credibility gate: if the simulator cannot reproduce a real race given the
 true strategies, every counterfactual downstream is worthless. Do not build the strategy

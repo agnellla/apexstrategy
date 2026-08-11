@@ -116,3 +116,48 @@ def test_training_laps_excludes_monaco_and_unclean() -> None:
     assert "monaco" not in set(train["circuit"])
     assert train["is_clean"].all()
     assert len(set(train["circuit"])) == 6
+
+
+def test_exactly_one_leader_per_lap(tables: dict[str, pd.DataFrame]) -> None:
+    """Null gap_ahead_s must occur exactly once per (race, lap) -- the leader."""
+    laps = tables["laps"]
+    leaders = laps["gap_ahead_s"].isna().sum()
+    groups = laps.groupby(["race_id", "lap_number"]).ngroups
+    assert leaders == groups
+
+
+def test_derived_position_matches_reported(tables: dict[str, pd.DataFrame]) -> None:
+    """Consistency check, not independent validation: FastF1's `position` comes from
+    the same timing feed. It confirms the ordering logic, not the underlying times."""
+    from apexstrategy.data.gaps import position_agreement
+
+    assert (position_agreement(tables["laps"])["agreement"] > 99).all()
+
+
+def test_gaps_are_non_negative(tables: dict[str, pd.DataFrame]) -> None:
+    laps = tables["laps"]
+    assert (laps["gap_to_leader_s"].dropna() >= 0).all()
+    assert (laps["gap_ahead_s"].dropna() >= 0).all()
+
+
+def test_a_driver_already_leading_is_never_flagged_dirty_air(
+    tables: dict[str, pd.DataFrame],
+) -> None:
+    """The invariant holds on the PREVIOUS lap's position, not the current one.
+
+    Because ``in_dirty_air`` uses the gap entering the lap, a car that started the lap
+    in second place and took the lead during it is correctly flagged -- it really did
+    run part of that lap in a wake. In the built store, 9 laps are flagged for a car
+    classified as leader, and all 9 were P2 or P3 the lap before. A car that was
+    already leading has no entering gap at all, so it can never be flagged.
+    """
+    laps = tables["laps"].sort_values(["race_id", "driver", "lap_number"])
+    prev_position = laps.groupby(["race_id", "driver"])["derived_position"].shift(1)
+    already_leading = laps[prev_position == 1]
+    assert not already_leading["in_dirty_air"].any()
+
+
+def test_clean_laps_are_in_clear_air(tables: dict[str, pd.DataFrame]) -> None:
+    """The point of the dirty-air filter: `is_clean` must mean clean-AIR pace."""
+    clean = tables["laps"].query("is_clean")
+    assert not clean["in_dirty_air"].any()

@@ -778,9 +778,83 @@ non-Monaco circuits.
   across a race (fuel burn-off). This detects a fuel correction silently reappearing
   at ingest.
 
-### Phase 2 — next
+### Phases 2 + 3 — complete (2026-08-12), merged
 
-Dirty-air exclusion and the full clean-lap yield decomposition. Requires gaps, so it
-merges with Phase 3 (gap/track-position derivation) — the `dirty_air` exclusion reason
-is already reserved in the schema. The Phase 2 exit criterion (measured clean-lap yield)
-is partly met; it completes once dirty air is filtered.
+Merged because dirty-air exclusion (Phase 2) is impossible without gaps (Phase 3).
+67/67 tests pass, ruff clean.
+
+**Gap reconstruction.** FastF1 has no gap column. Gaps are differenced from cumulative
+session time between drivers at the same lap number. Added to `laps`:
+`gap_to_leader_s`, `gap_ahead_s`, `entering_gap_s`, `derived_position`, `in_dirty_air`.
+
+**Exit criterion met, with a caveat about what it proves.** Reconstructed order agrees
+with FastF1's reported `position` on **99.9–100%** of laps at every circuit. But
+FastF1's `Position` derives from the same timing feed, so this is a *consistency* check
+on the ordering logic, not independent validation of the underlying times. The stronger
+structural check: null `gap_ahead_s` occurs exactly **447** times against exactly **447**
+(race, lap) groups — precisely one leader per lap, which the construction could not pass
+by accident.
+
+#### The entering-gap decision
+
+`in_dirty_air` for lap *N* uses the gap measured at the end of lap *N−1* — the traffic
+state the car *entered* the lap in — not the gap at the end of lap *N*.
+
+This is load-bearing. Using the end-of-lap gap would be **selection-biased**: a car
+having a fast lap closes on the car ahead and would be flagged, while the same car
+having a slow lap drops back and would not. Excluding preferentially-fast laps would
+bias the pace model downward. The entering gap is causally prior to the lap time it
+explains.
+
+A consequence worth stating: a car that starts a lap in second and takes the lead during
+it *is* flagged, because it genuinely ran part of that lap in a wake. In the built store
+9 such laps exist, and all 9 were P2 or P3 the previous lap. A test initially asserted
+"the leader is never in dirty air" and failed against real data — the assertion encoded
+the end-of-lap definition that was deliberately rejected. The test was wrong, not the code.
+
+#### Clean-lap yield collapses, as predicted
+
+| | Before dirty air | After |
+|---|---|---|
+| Overall clean | 87.1% | **59.2%** |
+| Clean training laps (6 circuits) | 6,062 | **4,269** |
+
+Per circuit, worst to best: Britain 41.0% (wet phase *and* traffic), Monaco 52.5%
+(everyone runs nose-to-tail), Suzuka 57.6%, Bahrain 63.0%, Austria 63.4%,
+Hungary 65.5%, Barcelona 65.9%.
+
+#### Threshold sensitivity — a judgement call, made visible
+
+Share of otherwise-clean laps excluded at each candidate cutoff:
+
+| Threshold | Laps excluded | % of otherwise-clean |
+|---|---|---|
+| 0.5 s | 460 | 6.4% |
+| 1.0 s | 1,576 | 21.8% |
+| **1.5 s (chosen)** | **2,312** | **32.0%** |
+| 2.0 s | 2,949 | 40.8% |
+| 3.0 s | 3,862 | 53.4% |
+
+1.5 s is roughly the range over which aerodynamic wake measurably costs lap time (DRS
+detection sits at 1.0 s), but it is a judgement, not a measured constant — hence the
+sensitivity table shipping alongside it in the build output.
+
+#### Open recommendation for Phase 5
+
+Discarding 32% of otherwise-usable laps is expensive. A statistically more efficient
+alternative is to **retain dirty-air laps and include `entering_gap_s` as a covariate**
+in the pace model, letting it estimate the wake penalty rather than assuming those laps
+are unusable. That would recover the data *and* produce the traffic-penalty estimate
+that the product's Phase 2 (overtaking/positions) needs anyway — for free.
+
+The store already supports both: `entering_gap_s` and `in_dirty_air` are retained on
+every lap, and `is_clean` remains the strict clean-air definition. Decide at Phase 5 by
+comparing LORO error both ways. **This is a live decision, not a settled one.**
+
+### Phase 4 — next
+
+Circuit constants: fuel coefficient β and pit-lane loss, fitted per circuit with
+standard errors, written to `circuits.parquet`. Fuel β must be identified from
+*across-stint* variation (Challenge 4). Green-flag pit durations are already measured
+and physically sensible (Hungary 21.8 s, Britain 29.4 s medians), so pit loss has a
+credible starting point.

@@ -17,6 +17,7 @@ import pandas as pd
 from .. import config
 from . import store
 from .clean import yield_summary
+from .gaps import DIRTY_AIR_THRESHOLD_S, dirty_air_sensitivity, position_agreement
 from .load import load_session
 from .normalize import normalize_session
 
@@ -29,9 +30,7 @@ def build(circuit_keys: tuple[str, ...] | None = None) -> dict[str, pd.DataFrame
     """Ingest, normalise, validate, and write all tables."""
     config.ensure_dirs()
     circuits = (
-        tuple(config.CIRCUITS_BY_KEY[k] for k in circuit_keys)
-        if circuit_keys
-        else config.CIRCUITS
+        tuple(config.CIRCUITS_BY_KEY[k] for k in circuit_keys) if circuit_keys else config.CIRCUITS
     )
 
     collected: dict[str, list[pd.DataFrame]] = {n: [] for n in TABLE_NAMES}
@@ -66,6 +65,12 @@ def main(argv: list[str] | None = None) -> int:
     print("\n=== clean-lap yield ===")
     print(yield_summary(laps).to_string())
     print(f"\noverall clean: {100 * laps['is_clean'].mean():.1f}%  ({len(laps)} laps)")
+
+    print("\n=== reconstructed vs reported position ===")
+    print(position_agreement(laps).to_string())
+
+    print(f"\n=== dirty-air threshold sensitivity (using {DIRTY_AIR_THRESHOLD_S}s) ===")
+    print(dirty_air_sensitivity(laps).to_string(index=False))
 
     stints = tables["stints"]
     print("\n=== stint end reasons ===")

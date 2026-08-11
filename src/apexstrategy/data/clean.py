@@ -71,6 +71,11 @@ def classify_laps(laps: pd.DataFrame) -> pd.DataFrame:
     mark(~laps["is_accurate"], "inaccurate")
     # MVP is dry-race only (Part 14, assumption 8).
     mark(laps["compound"].isin(WET_COMPOUNDS), "wet_compound")
+    # Lowest priority: a lap spent in another car's wake is not clean-air pace. Applied
+    # last so that a lap which is *also* a pit lap or under caution is attributed to the
+    # stronger cause, keeping the dirty-air count interpretable as "otherwise clean".
+    if "in_dirty_air" in laps.columns:
+        mark(laps["in_dirty_air"], "dirty_air")
 
     laps["exclusion_reason"] = reason
     laps["is_clean"] = reason == "clean"
@@ -82,9 +87,7 @@ def yield_summary(laps: pd.DataFrame) -> pd.DataFrame:
 
     This is the Phase 2 deliverable and feeds the dashboard's data-quality panel.
     """
-    counts = (
-        laps.groupby(["race_id", "exclusion_reason"]).size().unstack(fill_value=0).astype(int)
-    )
+    counts = laps.groupby(["race_id", "exclusion_reason"]).size().unstack(fill_value=0).astype(int)
     counts["total"] = counts.sum(axis=1)
     counts["clean_pct"] = (100 * counts.get("clean", 0) / counts["total"]).round(1)
     return counts.sort_values("clean_pct")
