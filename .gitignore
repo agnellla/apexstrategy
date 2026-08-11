@@ -1,0 +1,21 @@
+# Data and artifacts are reproducible from the pipeline; never commit them.
+data/
+models/
+*.joblib
+*.parquet
+*.ff1pkl
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
