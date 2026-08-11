@@ -1,6 +1,8 @@
 # Data and artifacts are reproducible from the pipeline; never commit them.
-data/
-models/
+# Leading slash is load-bearing: a bare `data/` also matches src/apexstrategy/data/,
+# and a bare `models/` would silently untrack src/apexstrategy/models/ in Phase 5.
+/data/
+/models/
 *.joblib
 *.parquet
 *.ff1pkl
