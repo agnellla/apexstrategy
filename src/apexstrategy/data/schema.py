@@ -322,5 +322,43 @@ RESULTS = TableSpec(
     ),
 )
 
-ALL_TABLES: tuple[TableSpec, ...] = (LAPS, STINTS, PITS, TRACK_STATUS, WEATHER, RESULTS)
+CIRCUITS = TableSpec(
+    name="circuits",
+    grain=("circuit",),
+    columns=(
+        ColumnSpec(name="circuit", kind="str"),
+        # "pooled" is the LORO-safe default: with one race per circuit, a per-circuit
+        # constant cannot be validated out-of-sample (Part 13, risk 5).
+        ColumnSpec(name="scope", kind="str", allowed=frozenset({"circuit", "pooled"})),
+        # Silverstone 2024 was 19% wet-compound laps and fails this, so it is excluded
+        # from the pooled fit: the MVP is dry-only (Part 14, assumption 8).
+        ColumnSpec(name="is_dry_race", kind="bool"),
+        ColumnSpec(name="use_for_training", kind="bool"),
+        # Fuel burn AND track evolution combined -- they are not separately identifiable
+        # from lap-level data, and the simulator needs only their sum. Negative.
+        ColumnSpec(name="race_progress_coef_s_per_lap", kind="float", max_value=0),
+        ColumnSpec(name="race_progress_se", kind="float", min_value=0),
+        # Normalised by lap duration so circuits of very different lap length compare.
+        ColumnSpec(name="race_progress_pct_per_lap", kind="float", max_value=0),
+        ColumnSpec(name="race_progress_n_laps", kind="int", min_value=50),
+        ColumnSpec(name="race_progress_r2", kind="float", min_value=0, max_value=1),
+        # Approaching 1.0 would mean the race-progress/degradation split is degenerate.
+        ColumnSpec(name="lap_tyre_corr", kind="float", min_value=-1, max_value=1),
+        ColumnSpec(name="pit_loss_median_s", kind="float", min_value=5, max_value=60),
+        ColumnSpec(name="pit_loss_p25_s", kind="float"),
+        ColumnSpec(name="pit_loss_p75_s", kind="float"),
+        ColumnSpec(name="pit_loss_n", kind="int", min_value=1),
+        ColumnSpec(name="pit_lane_median_s", kind="float", min_value=10, max_value=120),
+    ),
+)
+
+ALL_TABLES: tuple[TableSpec, ...] = (
+    LAPS,
+    STINTS,
+    PITS,
+    TRACK_STATUS,
+    WEATHER,
+    RESULTS,
+    CIRCUITS,
+)
 TABLES_BY_NAME = {t.name: t for t in ALL_TABLES}

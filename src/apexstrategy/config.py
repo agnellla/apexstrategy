@@ -85,7 +85,21 @@ CIRCUITS: tuple[Circuit, ...] = (
     ),
     Circuit("barcelona", "Spanish", 10),
     Circuit("austria", "Austrian", 11),  # 'Austrian' not 'Austria', to exclude 'Australian'
-    Circuit("britain", "British", 12),
+    Circuit(
+        "britain",
+        "British",
+        12,
+        use_for_training=False,
+        note=(
+            "Silverstone 2024 was a mixed-conditions race: 24.3% of its laps were run "
+            "on intermediates, against a 5% dry-race threshold. The MVP is dry-only "
+            "(Part 14, assumption 8). Contamination is measurable rather than "
+            "theoretical -- its pit-loss estimate came out at 35.3s against 20-25s at "
+            "every other circuit, because in/out laps ran in damp conditions while the "
+            "clean-pace reference came from dry laps. Stored for completeness and for "
+            "later wet-weather work; excluded from fitting."
+        ),
+    ),
     Circuit("hungary", "Hungar", 13),  # 'Hungar' matches Hungarian/Hungaroring
 )
 

@@ -645,6 +645,8 @@ Phase 7 is the hard gate. Everything after it is only as trustworthy as the repl
 - **D5 — The MVP decision layer is denominated in expected race time, not finishing position.** Overtaking, traffic and position outcomes move to **Phase 2** — retained in the architecture, deferred in the build. The MVP answers "how much time does this strategy gain or lose?"; Phase 2 converts time into positions and then into points (D2).
 - **D6 — Python 3.11**, managed by `uv`, not the system 3.13.
 - **D7 — Telemetry (`car_data`, `position_data`) is not ingested.** Measured: 337 MB of the 432 MB existing cache. Lap-level essentials are ~1.2 MB/race.
+- **D9 — Two front-ends, with different jobs.** Streamlit remains the *internal* tool (diagnostics, data-quality, replay validation) because it is fast to build and nobody needs it to be beautiful. A separate **Next.js showcase on Vercel**, fed by **precomputed scenario JSON**, carries the UI/UX story. Rationale: Streamlit's layout primitives actively fight design control, so making it beautiful is slow *and* still looks like Streamlit. Precomputing a discretised scenario grid (pit lap × compound × SC assumption) offline removes the need for any backend — no cold starts, instant interaction, zero hosting cost. Trade-off accepted: users can only explore grid points, not arbitrary scenarios, which is invisible in a portfolio demo. **Consequence for earlier phases:** the strategy engine must emit JSON-serialisable results, not objects coupled to Streamlit.
+- **D10 — Silverstone 2024 is excluded from model fitting.** Measured at **24.3% wet-compound laps** against a 5% dry-race threshold. The MVP is dry-only (Part 14, assumption 8), and the contamination is measurable rather than theoretical: its pit-loss estimate came out at 35.3 s against 20–25 s everywhere else, because in/out laps ran in damp conditions while the clean-pace reference came from dry laps. Stored for completeness and for later wet-weather work. **The training pool is now five circuits**, not six.
 
 ### Consequences of D5 for the sections above
 
@@ -851,10 +853,87 @@ The store already supports both: `entering_gap_s` and `in_dirty_air` are retaine
 every lap, and `is_clean` remains the strict clean-air definition. Decide at Phase 5 by
 comparing LORO error both ways. **This is a live decision, not a settled one.**
 
-### Phase 4 — next
+### Phase 4 — complete (2026-08-12)
 
-Circuit constants: fuel coefficient β and pit-lane loss, fitted per circuit with
-standard errors, written to `circuits.parquet`. Fuel β must be identified from
-*across-stint* variation (Challenge 4). Green-flag pit durations are already measured
-and physically sensible (Hungary 21.8 s, Britain 29.4 s medians), so pit loss has a
-credible starting point.
+Circuit constants fitted with uncertainty and written to `circuits.parquet`.
+69/69 tests pass, ruff clean.
+
+#### It is a race-progress coefficient, not a fuel coefficient
+
+The brief called for a fuel correction. Fuel burn is real, but it is **not separately
+identifiable** from lap-level race data: track evolution also makes later laps faster and
+is also a function of lap number. Any regression on lap number captures their sum.
+Splitting them requires an assumption, not an estimate.
+
+For the decision layer this is immaterial, and claiming otherwise would be false
+precision. The simulator needs the *total* effect of being N laps into a race, and both
+components are strategy-independent — neither changes with when a driver pits, so both
+cancel when comparing two strategies at the same lap. The constant is named for what it
+measures.
+
+#### Identification held up
+
+Within a stint, tyre age and lap number are perfectly collinear. Identification comes
+entirely from across-stint variation, and the data supports it: the lap-number/tyre-age
+correlation among clean laps is **0.34–0.48** by circuit, far from degenerate. Tyre age
+8–12 occurs at laps 6–12 in stint 1 and laps 36–65 in stint 3. `fit_race_progress`
+reports that correlation per circuit so a future dataset approaching 1.0 is caught rather
+than silently producing a meaningless split.
+
+#### Results
+
+| Circuit | β (s/lap) | β (%/lap) | R² | Pit loss (s) | n stops |
+|---|---|---|---|---|---|
+| austria | −0.027 | −0.037 | 0.75 | 20.8 | 45 |
+| hungary | −0.041 | −0.049 | 0.69 | 20.4 | 40 |
+| barcelona | −0.053 | −0.065 | 0.76 | 22.5 | 42 |
+| bahrain | −0.068 | −0.071 | 0.84 | 24.8 | 41 |
+| suzuka | −0.149 | −0.154 | 0.31 | 22.1 | 36 |
+| *britain (excluded)* | *−0.059* | *−0.064* | *0.52* | *35.3* | *22* |
+| *monaco (excluded)* | *−0.116* | *−0.147* | *0.71* | *23.0* | *7* |
+| **_pooled** | **−0.053** | **−0.064** | **0.97** | **21.9** | **204** |
+
+**The strongest validation in the project so far:** the pooled coefficient of
+**−0.0534 s/lap** lands squarely inside the fuel-only physical prior of −0.05 to −0.08,
+derived independently from published fuel-effect figures. A data-driven estimate agreeing
+with physics it never saw is meaningful evidence the pipeline is sound.
+
+Pit-loss values are likewise consistent with published F1 figures (Hungary ~20 s,
+Bahrain ~25 s), and were measured over the in-lap/out-lap pair against local clean pace
+rather than from raw pit-lane transit, which understates the true cost.
+
+#### Three corrections made during the phase
+
+1. **The pooled fit was misspecified.** Without circuit fixed effects it tried to explain
+   baseline lap-time differences — 71 s at Austria to 97 s at Suzuka — using compound and
+   lap number. R² was 0.11 and the coefficient −0.153, larger than every individual
+   circuit. Adding `C(circuit)` took R² to **0.97** and the coefficient to −0.053.
+2. **The prior check was wrong-headed.** It required the combined coefficient to be at
+   least as large in magnitude as fuel burn alone, and flagged Austria and Hungary as
+   implausible. That is backwards: track evolution can *oppose* the fuel effect, so a
+   smaller combined value is physically ordinary. Replaced with a plausibility band plus
+   a significance test.
+3. **Wet stops contaminated pit loss.** Silverstone's intermediate stops measured 42.5 s
+   against ~35 s for dry stops the same day. Now excluded, along with the whole race (D10).
+
+#### Known weak spot
+
+**Suzuka's estimate is the least reliable**: R² 0.31 and SE 0.0146, roughly 10× the SE at
+Bahrain, on only 522 clean laps. Its coefficient (−0.149) is nearly 3× the pooled value.
+The pooled constant should be preferred there until the pace model gives a second opinion.
+
+#### A limitation that cannot be engineered away
+
+With **one race per circuit**, per-circuit constants **cannot be validated out-of-sample**.
+Leave-one-race-out holds out the only race a circuit has, so its own constant is
+unavailable by construction — using it anyway is exactly the circuit-constant leakage
+flagged in Part 13, risk 5. The pooled constant is therefore the LORO-safe default and
+per-circuit values are an in-sample refinement. Resolving this properly needs multiple
+seasons per circuit, which is post-MVP.
+
+### Phase 5 — next
+
+Pace/degradation model: LightGBM plus a linear baseline, both exposing `predict_dist`,
+evaluated leave-one-race-out across the five training circuits. Two decisions land here:
+whether dirty-air laps return as a covariate rather than an exclusion (Phase 2+3 log),
+and whether the boosted model earns its place over the baseline.

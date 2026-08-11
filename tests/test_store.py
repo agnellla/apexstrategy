@@ -110,12 +110,16 @@ def test_lap_times_are_raw_not_fuel_corrected(tables: dict[str, pd.DataFrame]) -
     assert late < early, "raw lap times should fall across a race as fuel burns off"
 
 
-def test_training_laps_excludes_monaco_and_unclean() -> None:
-    """D3 is enforced at the store boundary so no model can forget it."""
+def test_training_laps_excludes_untrainable_circuits_and_unclean() -> None:
+    """Enforced at the store boundary so no model can forget it.
+
+    Monaco is out as a pathological outlier (D3); Silverstone because 2024 was a
+    mixed-conditions race (D10). Five circuits remain.
+    """
     train = store.training_laps()
-    assert "monaco" not in set(train["circuit"])
+    assert {"monaco", "britain"}.isdisjoint(set(train["circuit"]))
     assert train["is_clean"].all()
-    assert len(set(train["circuit"])) == 6
+    assert len(set(train["circuit"])) == 5
 
 
 def test_exactly_one_leader_per_lap(tables: dict[str, pd.DataFrame]) -> None:
@@ -161,3 +165,16 @@ def test_clean_laps_are_in_clear_air(tables: dict[str, pd.DataFrame]) -> None:
     """The point of the dirty-air filter: `is_clean` must mean clean-AIR pace."""
     clean = tables["laps"].query("is_clean")
     assert not clean["in_dirty_air"].any()
+
+
+def test_config_dry_race_exclusions_match_the_data(tables: dict[str, pd.DataFrame]) -> None:
+    """Encode-then-verify, applied to scope. Config asserts which circuits are dry
+    enough to fit on; the data must agree. Silverstone 2024 is 24.3% wet laps."""
+    from apexstrategy.models.circuit_constants import dry_circuits
+
+    measured_dry = dry_circuits(tables["laps"])
+    for circuit in config.CIRCUITS:
+        if circuit.use_for_training:
+            assert circuit.key in measured_dry, (
+                f"{circuit.key} is marked trainable but the data says it was not a dry race"
+            )

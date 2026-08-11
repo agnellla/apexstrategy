@@ -19,18 +19,20 @@ uv run python -m apexstrategy.data.build --circuits bahrain   # one race, for it
 
 Always `uv run` — there is no active venv on PATH.
 
-## Decisions (D1–D8) — do not silently reverse these
+## Decisions (D1–D10) — do not silently reverse these
 
 | | Decision |
 |---|---|
 | **D1** | **No tyre-life model.** `stint_end - current_lap` predicts *when a team chose to pit*, not tyre life: a decision not a physical quantity, 32% censored (measured), and circular inside an engine whose job is recommending pit laps. Degradation is modelled from pace; remaining life is *derived* in the strategy layer. Censored survival version is Phase 8+. |
 | **D2** | Ranking on expected championship points — **deferred**, needs positions (see D5). |
-| **D3** | Circuit set **frozen at 7** until the pipeline runs end-to-end: bahrain, suzuka, monaco, barcelona, austria, britain, hungary. **Monaco is stored but excluded from training** (pathological outlier). Training pool = 6. |
+| **D3** | Circuit set **frozen at 7** until the pipeline runs end-to-end: bahrain, suzuka, monaco, barcelona, austria, britain, hungary. **Monaco is stored but excluded from training** (pathological outlier). See also D10. |
 | **D4** | **Hungary 2024 is the demo/narrative race** (McLaren undercut-and-swap-back), still in the training pool. |
 | **D5** | **MVP is denominated in expected race time, not position.** Overtaking/traffic/positions are Phase 2 of the product (post-MVP). |
 | **D6** | Python 3.11 via `uv`. |
 | **D7** | **No telemetry ingest** (`car_data`, `position_data`) — was 337 MB of a 432 MB 4-race cache, contributes nothing at lap granularity. |
 | **D8** | The sibling `pitwindow/` project is **mined, not restarted**. See the Phase 1 build log for the component-by-component disposition. |
+| **D9** | **Two front-ends.** Streamlit = internal tool (diagnostics, validation). A separate **Next.js showcase on Vercel fed by precomputed scenario JSON** carries the UI/UX story — Streamlit fights design control. Consequence: **the strategy engine must emit JSON-serialisable results**, not Streamlit-coupled objects. |
+| **D10** | **Silverstone 2024 excluded from fitting** — 24.3% wet-compound laps vs a 5% dry threshold. Contamination was measured, not assumed: its pit loss came out 35.3s vs 20–25s elsewhere. **Training pool is 5 circuits**, not 6. |
 
 ## Design rules that are load-bearing
 
@@ -70,21 +72,26 @@ src/apexstrategy/
     load.py          ONLY module that imports fastf1
     clean.py         exclusion reasons (prioritised, mutually exclusive)
     normalize.py     FastF1 -> the 6 tables
-    store.py         parquet IO; validates on WRITE; `training_laps()` enforces D3
+    store.py         parquet IO; validates on WRITE; `training_laps()` enforces D3+D10
+  models/
+    circuit_constants.py  race-progress coef + pit loss, fitted per circuit
     build.py         CLI entry point
 ```
 
 Modules are created in the phase that first needs them — absent directories are
 deliberate, not missing work.
 
-## Store (6 tables, ~250 KB, `data/processed/`)
+## Store (7 tables, ~250 KB, `data/processed/`)
 
 `laps` (8,304) · `stints` (432) · `pits` (296) · `results` (140) · `weather` (1,137) ·
-`track_status` (29). **4,269 clean training laps** across the 6 non-Monaco circuits
-(59.2% clean-lap yield, after dirty-air filtering).
+`track_status` (29) · `circuits` (8).
 
-Models read via `store.training_laps()` — it applies both `is_clean` and the Monaco
-exclusion so no model can forget D3.
+**3,875 clean training laps** across the **5** trainable circuits (austria, bahrain,
+barcelona, hungary, suzuka). Overall clean-lap yield is 59.2% after dirty-air filtering;
+4,269 clean laps exist across 6 circuits before D10 removes Silverstone.
+
+Models read via `store.training_laps()` — it applies `is_clean` plus the Monaco (D3) and
+Silverstone (D10) exclusions, so no model can forget either.
 
 ### Dirty air — a live decision for Phase 5
 
@@ -115,10 +122,29 @@ product's Phase 2 needs. Decide by comparing LORO error both ways — not yet se
 
 ## Phase status
 
-Done: **0** (repo/env), **1** (ingest + contracts), **2+3** (gaps + dirty air, merged).
-Next: **4** (circuit constants: fuel β and pit loss, fitted per circuit with standard
-errors), 5 (pace model), 6 (RaceState), **7 (simulator + replay validation — the hard
-gate)**.
+Done: **0** (repo/env), **1** (ingest + contracts), **2+3** (gaps + dirty air),
+**4** (circuit constants).
+Next: **5** (pace model: LightGBM + linear baseline, both with `predict_dist`, LORO over
+5 circuits), 6 (RaceState), **7 (simulator + replay validation — the hard gate)**.
+
+### Circuit constants (Phase 4 output, `circuits.parquet`)
+
+It is a **race-progress** coefficient, not a fuel coefficient: fuel burn and track
+evolution are not separately identifiable from lap-level data, and the simulator needs
+only their sum (both are strategy-independent, so both cancel when comparing strategies
+at the same lap). Do not rename it back to "fuel".
+
+Pooled: **−0.0534 s/lap** (R² 0.97), which lands inside the independently-derived
+fuel-only physical prior of −0.05 to −0.08 — the strongest validation so far. Pooled pit
+loss **21.9s** over 204 dry green-flag stops.
+
+- **Prefer the pooled constant as the default.** With one race per circuit, per-circuit
+  constants **cannot be validated out-of-sample** (LORO holds out the only race a circuit
+  has). Per-circuit values are an in-sample refinement.
+- **Suzuka is the weak spot**: R² 0.31, SE 10× Bahrain's, coefficient ~3× pooled. Treat
+  with suspicion until the pace model gives a second opinion.
+- Pooled fits **must** include `C(circuit)` — without it R² collapses to 0.11 because the
+  model tries to explain 71s-vs-97s baseline lap times using compound and lap number.
 
 Phase 7 is the credibility gate: if the simulator cannot reproduce a real race given the
 true strategies, every counterfactual downstream is worthless. Do not build the strategy

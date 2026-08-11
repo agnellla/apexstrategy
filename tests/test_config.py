@@ -30,9 +30,18 @@ def test_monaco_is_stored_but_excluded_from_training() -> None:
     assert monaco not in config.TRAINING_CIRCUITS
 
 
-def test_training_pool_is_six_circuits() -> None:
-    assert len(config.TRAINING_CIRCUITS) == 6
+def test_training_pool_is_five_circuits() -> None:
+    """Two of the seven are excluded, for different reasons: Monaco as a pathological
+    outlier (D3), Silverstone because 2024 was a mixed-conditions race (D10)."""
+    assert len(config.TRAINING_CIRCUITS) == 5
     assert all(c.use_for_training for c in config.TRAINING_CIRCUITS)
+    assert {"monaco", "britain"}.isdisjoint({c.key for c in config.TRAINING_CIRCUITS})
+
+
+def test_every_excluded_circuit_records_why() -> None:
+    for circuit in config.CIRCUITS:
+        if not circuit.use_for_training:
+            assert circuit.note, f"{circuit.key} is excluded without a recorded reason"
 
 
 def test_demo_circuit_is_in_the_training_pool() -> None:
