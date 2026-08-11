@@ -33,6 +33,35 @@ def _has_status(track_status: pd.Series, code: str) -> pd.Series:
     return track_status.fillna("").astype(str).str.contains(code, regex=False)
 
 
+def _first_timed_lap_after_red_flag(laps: pd.DataFrame) -> pd.Series:
+    """Flag each driver's first timed lap following a red-flag suspension.
+
+    A restart runs through a formation procedure, so the first timed lap afterwards is
+    far off representative pace but carries an ordinary ``AllClear`` track status by the
+    time it completes -- every other rule lets it through. At Suzuka 2024 six such laps
+    survived cleaning at 33-53% above the drivers' own race medians, and they were enough
+    to drag that circuit's Phase 4 race-progress coefficient to roughly three times the
+    pooled value.
+
+    The rule keys off race-control state and the *presence* of a lap time, never its
+    value. Excluding a lap for being slow would be outcome-informed cleaning
+    (architecture-proposal.md, Part 13, risk 7); this is not that.
+    """
+    red = _has_status(laps["track_status"], STATUS_RED)
+    flagged = pd.Series(False, index=laps.index)
+
+    for _, idx in laps.groupby(["race_id", "driver"], sort=False).groups.items():
+        group = laps.loc[idx]
+        red_laps = group.loc[red.loc[idx], "lap_number"]
+        if red_laps.empty:
+            continue
+        after = group[(group["lap_number"] > red_laps.max()) & group["lap_time_s"].notna()]
+        if not after.empty:
+            flagged.loc[after["lap_number"].idxmin()] = True
+
+    return flagged
+
+
 def classify_laps(laps: pd.DataFrame) -> pd.DataFrame:
     """Add ``is_clean`` and ``exclusion_reason`` to a normalised laps frame.
 
@@ -59,6 +88,8 @@ def classify_laps(laps: pd.DataFrame) -> pd.DataFrame:
     mark(laps["is_pit_in"], "pit_in")
     mark(laps["is_pit_out"], "pit_out")
     mark(_has_status(status, STATUS_RED), "red_flag")
+    if {"race_id", "driver"}.issubset(laps.columns):
+        mark(_first_timed_lap_after_red_flag(laps), "restart")
     mark(_has_status(status, STATUS_SAFETY_CAR), "safety_car")
     mark(
         _has_status(status, STATUS_VSC_DEPLOYED) | _has_status(status, STATUS_VSC_ENDING),

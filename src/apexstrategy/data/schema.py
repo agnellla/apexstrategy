@@ -30,6 +30,7 @@ EXCLUSION_REASONS = (
     "pit_in",
     "pit_out",
     "red_flag",
+    "restart",
     "safety_car",
     "vsc",
     "yellow",

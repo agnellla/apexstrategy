@@ -19,7 +19,7 @@ uv run python -m apexstrategy.data.build --circuits bahrain   # one race, for it
 
 Always `uv run` — there is no active venv on PATH.
 
-## Decisions (D1–D10) — do not silently reverse these
+## Decisions (D1–D12) — do not silently reverse these
 
 | | Decision |
 |---|---|
@@ -33,6 +33,8 @@ Always `uv run` — there is no active venv on PATH.
 | **D8** | The sibling `pitwindow/` project is **mined, not restarted**. See the Phase 1 build log for the component-by-component disposition. |
 | **D9** | **Two front-ends.** Streamlit = internal tool (diagnostics, validation). A separate **Next.js showcase on Vercel fed by precomputed scenario JSON** carries the UI/UX story — Streamlit fights design control. Consequence: **the strategy engine must emit JSON-serialisable results**, not Streamlit-coupled objects. |
 | **D10** | **Silverstone 2024 excluded from fitting** — 24.3% wet-compound laps vs a 5% dry threshold. Contamination was measured, not assumed: its pit loss came out 35.3s vs 20–25s elsewhere. **Training pool is 5 circuits**, not 6. |
+| **D11** | **The linear pace baseline ships; LightGBM does not.** LORO MAE 0.556 vs 0.626, degradation error 0.0137 vs 0.0174 s/lap. With 5 circuits, the GBM learns circuit-specific structure that does not transfer. Do not re-adopt a boosted model without beating these numbers. |
+| **D12** | **Dirty-air laps stay excluded, not a covariate.** Tested fairly (fixed clean test set, only training data varied): +39% data does not improve clean-lap prediction. Columns remain in the store; revisit when product-Phase 2 needs a traffic penalty. |
 
 ## Design rules that are load-bearing
 
@@ -93,7 +95,7 @@ barcelona, hungary, suzuka). Overall clean-lap yield is 59.2% after dirty-air fi
 Models read via `store.training_laps()` — it applies `is_clean` plus the Monaco (D3) and
 Silverstone (D10) exclusions, so no model can forget either.
 
-### Dirty air — a live decision for Phase 5
+### Dirty air — settled (D12)
 
 `in_dirty_air` uses the gap entering the lap (end of lap N−1), **never** the end-of-lap
 gap. Using end-of-lap would be selection-biased: closing on the car ahead is what a fast
@@ -101,10 +103,8 @@ lap looks like, so it would preferentially exclude fast laps and bias pace downw
 Consequence: a car that starts a lap P2 and takes the lead during it *is* flagged, which
 is correct. Do not "fix" that.
 
-Excluding dirty-air laps costs **32% of otherwise-clean laps** at the 1.5 s threshold.
-An open alternative for Phase 5: retain those laps and add `entering_gap_s` as a pace-model
-covariate instead. That recovers the data *and* yields the traffic-penalty estimate the
-product's Phase 2 needs. Decide by comparing LORO error both ways — not yet settled.
+Excluding costs 32% of otherwise-clean laps, but adding them back as a covariate was
+tested and **did not help** (D12). Columns stay in the store for product-Phase 2.
 
 ## Data gotchas (all cost real debugging time)
 
@@ -117,15 +117,36 @@ product's Phase 2 needs. Decide by comparing LORO error both ways — not yet se
 - **"Lapped" ≠ "retired".** Use `results.ClassifiedPosition`; non-numeric (R/D/W/N/E)
   means not classified. Inferring retirement from lap counts mislabels lapped finishers.
 - Silverstone 2024 had a wet phase — 183 INTERMEDIATE/WET laps, excluded (MVP is dry-only).
+- **Suzuka 2024 was red-flagged on lap 1.** The first timed lap after a restart carries an
+  ordinary `AllClear` status but runs 33–53% slow; six such laps distorted Suzuka's Phase 4
+  constant threefold before the `restart` exclusion was added.
 - FastF1's Ergast/jolpi backend times out intermittently. Non-fatal; retry.
 - `session.total_laps` and `session.event['RoundNumber']` are the reliable identity source.
 
 ## Phase status
 
 Done: **0** (repo/env), **1** (ingest + contracts), **2+3** (gaps + dirty air),
-**4** (circuit constants).
-Next: **5** (pace model: LightGBM + linear baseline, both with `predict_dist`, LORO over
-5 circuits), 6 (RaceState), **7 (simulator + replay validation — the hard gate)**.
+**4** (circuit constants), **5** (pace model).
+Next: **6** (RaceState/Scenario + temporal firewall), **7 (simulator + replay validation
+— the hard gate)**, 8 (hierarchical MC + calibration).
+
+### Pace model (Phase 5 output, `models/pace_model.joblib`)
+
+Target is a **pace delta** — `lap_time_s − median(driver's clean laps that race)` — not
+raw lap time. Raw is not LORO-evaluable (circuit medians span 71–97s), and strategy needs
+differences anyway. **Open gap:** the reference uses whole-race data; the simulator must
+rebuild it from laps ≤ L. Close this in Phase 6/7.
+
+Selected model is `LinearPaceBaseline` (D11), residual sd **0.73s**. `predict_dist`
+bootstraps empirical residuals — non-parametric because lap-time residuals are
+right-skewed and a Gaussian understates the slow tail that drives strategy risk.
+
+**Coverage is good at 4 of 5 circuits but Suzuka is materially under-covered**
+(50/80/95 → 0.33/0.57/0.78). Expected: sampling is i.i.d. per lap, which Challenge 5 says
+is insufficient. Phase 8 fixes this; these are the baseline numbers to beat.
+
+Evaluate degradation recovery, not just MAE — a model can score well on MAE by predicting
+each driver's mean pace while learning nothing about tyre decay.
 
 ### Circuit constants (Phase 4 output, `circuits.parquet`)
 

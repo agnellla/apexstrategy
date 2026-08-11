@@ -931,9 +931,109 @@ flagged in Part 13, risk 5. The pooled constant is therefore the LORO-safe defau
 per-circuit values are an in-sample refinement. Resolving this properly needs multiple
 seasons per circuit, which is post-MVP.
 
-### Phase 5 — next
+### Phase 5 — complete (2026-08-12)
 
-Pace/degradation model: LightGBM plus a linear baseline, both exposing `predict_dist`,
-evaluated leave-one-race-out across the five training circuits. Two decisions land here:
-whether dirty-air laps return as a covariate rather than an exclusion (Phase 2+3 log),
-and whether the boosted model earns its place over the baseline.
+Pace/degradation model fitted, evaluated LORO, and persisted. 91/91 tests pass.
+**Both open questions were settled by evidence, and both went against the sophisticated
+option.**
+
+#### The target is a pace *delta*, not raw lap time
+
+Raw lap time is not LORO-evaluable. LORO holds out an entire circuit, and median clean
+lap times span 71 s (Austria) to 97 s (Suzuka) — a model predicting raw time for an
+unseen circuit would predict roughly the average of the others and post a huge error
+that says nothing about whether it understands tyre degradation.
+
+The target is therefore `lap_time_s − median(driver's clean laps in that race)`. This is
+also what strategy actually needs: "how much do I lose staying out three more laps?" is
+a difference. The absolute level only sets race duration, and the simulator knows it
+from observed state.
+
+**Known gap, flagged not hidden:** the reference is computed over the whole race. In the
+simulator it must come from laps observed up to the decision lap only, so the model is
+evaluated under a slightly easier reference than it will face live. Closed at Phase 6/7.
+
+#### D11 — the linear baseline ships; LightGBM does not
+
+| Model | MAE (mean) | MAE (worst) | RMSE | R² | Deg error |
+|---|---|---|---|---|---|
+| **linear baseline** | **0.556 s** | 0.743 s | 0.768 | **0.424** | **0.0137 s/lap** |
+| lightgbm | 0.626 s | 0.747 s | 0.829 | 0.327 | 0.0174 s/lap |
+
+The boosted model loses on every metric, including the one that matters most. With only
+five circuits and LORO holding an entire circuit out, LightGBM learns circuit-specific
+structure that does not transfer, while the constrained linear form generalises. This is
+precisely the outcome Part 7 of this document demanded be tested for rather than assumed.
+
+**Degradation recovery matters more than MAE** and is reported separately, because a
+model can post excellent error by predicting each driver's mean pace while learning
+nothing about how tyres decay — and such a model is useless to the strategy layer.
+The linear model recovers the compound ordering (SOFT > MEDIUM > HARD) at every held-out
+circuit, at physically sensible rates: HARD 0.020–0.043 s/lap, MEDIUM 0.024–0.073,
+SOFT 0.056–0.122.
+
+Worst case is Suzuka SOFT (actual 0.122 vs model 0.075), but on n=33 laps the "actual"
+is itself unreliable.
+
+#### D12 — dirty-air laps stay excluded
+
+Adding them back with `entering_gap_s` as a covariate recovers 39% more data
+(3,875 → 5,387 laps) but does **not** improve prediction. Tested fairly, holding the
+test set fixed to clean laps so only the training data varies:
+
+| Training data | MAE on clean laps |
+|---|---|
+| **linear, clean only** | **0.556 s** |
+| linear, +dirty +gap | 0.581 s |
+| lgbm, clean only | 0.626 s |
+| lgbm, +dirty +gap | 0.600 s |
+
+The extra data *helps* LightGBM and *hurts* the linear model — expected, since
+`LinearPaceBaseline`'s formula has no traffic term, so those laps add noise it cannot
+explain. Either way the clean-only linear model wins. The columns stay in the store, so
+the decision is revisitable when the product's Phase 2 needs a traffic-penalty estimate.
+
+#### A data-quality bug found while investigating outliers
+
+Six "clean" laps sat 33–53% above their drivers' own race medians, all at **Suzuka
+lap 3** — the first timed lap after the red-flag restart. Their track status had already
+reverted to `AllClear`, so every existing rule let them through.
+
+These six laps were enough to distort Phase 4: they dragged Suzuka's race-progress
+coefficient to roughly three times pooled. Adding a `restart` exclusion — keyed off
+race-control state and the *presence* of a lap time, never its value, so it is not
+outcome-informed cleaning — fixed it:
+
+| | Before | After |
+|---|---|---|
+| Suzuka R² | 0.31 | **0.876** |
+| Suzuka SE | 0.0146 | **0.0021** |
+| Suzuka coefficient | −0.149 | −0.096 |
+| **Pooled R²** | 0.9945 | **0.9945** |
+| Pooled coefficient | −0.0534 | −0.0479 |
+
+#### Uncertainty: honest but incomplete
+
+`predict_dist` bootstraps empirical residuals (non-parametric, because lap-time residuals
+are right-skewed and a Gaussian would understate the slow tail that matters for risk).
+Residual sd is 0.73 s. Coverage on held-out circuits:
+
+| Circuit | 50% | 80% | 95% |
+|---|---|---|---|
+| austria | 0.538 | 0.834 | 0.974 |
+| bahrain | 0.495 | 0.838 | 0.983 |
+| barcelona | 0.486 | 0.809 | 0.948 |
+| hungary | 0.436 | 0.732 | 0.935 |
+| **suzuka** | **0.332** | **0.569** | **0.781** |
+
+Four of five circuits are close to nominal. **Suzuka is materially under-covered** — its
+residual spread differs from the circuits the model trained on. This is expected at this
+stage: sampling is i.i.d. per lap, which is exactly the thing Challenge 5 says is
+insufficient. Phase 8 adds the hierarchical structure, and these numbers are the baseline
+improvement is measured against.
+
+### Phase 6 — next
+
+`RaceState` / `Scenario` with the temporal firewall: state built from a frame truncated
+at lap L so it *cannot* contain future information, enforced by a property test. This is
+also where the reference-pace gap above gets closed.
