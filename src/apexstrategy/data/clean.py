@@ -29,8 +29,26 @@ STATUS_VSC_DEPLOYED = "6"
 STATUS_VSC_ENDING = "7"
 
 
+#: Every code that means the field was slowed. Yellow is excluded: it is local, costs a
+#: lift rather than a delta-time, and is handled as an ordinary pace exclusion.
+CAUTION_CODES = (STATUS_SAFETY_CAR, STATUS_VSC_DEPLOYED, STATUS_VSC_ENDING, STATUS_RED)
+
+
 def _has_status(track_status: pd.Series, code: str) -> pd.Series:
     return track_status.fillna("").astype(str).str.contains(code, regex=False)
+
+
+def is_under_caution(track_status: pd.Series) -> pd.Series:
+    """Whether a safety car, VSC, or red flag was active during each lap.
+
+    Read from ``track_status`` directly and never from ``exclusion_reason``: that label
+    is prioritised and lossy, and deriving caution state from it has already mislabelled
+    16 Monaco red-flag pit stops as green-flag once in this project.
+    """
+    flagged = pd.Series(False, index=track_status.index)
+    for code in CAUTION_CODES:
+        flagged |= _has_status(track_status, code)
+    return flagged
 
 
 def _first_timed_lap_after_red_flag(laps: pd.DataFrame) -> pd.Series:

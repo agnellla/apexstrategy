@@ -646,6 +646,13 @@ Phase 7 is the hard gate. Everything after it is only as trustworthy as the repl
 - **D6 — Python 3.11**, managed by `uv`, not the system 3.13.
 - **D7 — Telemetry (`car_data`, `position_data`) is not ingested.** Measured: 337 MB of the 432 MB existing cache. Lap-level essentials are ~1.2 MB/race.
 - **D9 — Two front-ends, with different jobs.** Streamlit remains the *internal* tool (diagnostics, data-quality, replay validation) because it is fast to build and nobody needs it to be beautiful. A separate **Next.js showcase on Vercel**, fed by **precomputed scenario JSON**, carries the UI/UX story. Rationale: Streamlit's layout primitives actively fight design control, so making it beautiful is slow *and* still looks like Streamlit. Precomputing a discretised scenario grid (pit lap × compound × SC assumption) offline removes the need for any backend — no cold starts, instant interaction, zero hosting cost. Trade-off accepted: users can only explore grid points, not arbitrary scenarios, which is invisible in a portfolio demo. **Consequence for earlier phases:** the strategy engine must emit JSON-serialisable results, not objects coupled to Streamlit.
+- **D13 — The race-progress residual is estimated in-race and shrunk (2026-08-17).** The
+  pace model carries one pooled race-progress coefficient; the true per-circuit rate spans
+  −0.027 to −0.096 s/lap, and under LORO that mismatch was the dominant replay error
+  (r = 0.993 against the Phase 4 coefficient gap). It is corrected by regressing the
+  implied reference on lap number over laps ≤ L — firewall-safe, since it uses only the
+  race in progress — shrunk by `n/(n+300)`. Shrinkage is load-bearing: the **unshrunk**
+  estimate is worse than no correction at all.
 - **D10 — Silverstone 2024 is excluded from model fitting.** Measured at **24.3% wet-compound laps** against a 5% dry-race threshold. The MVP is dry-only (Part 14, assumption 8), and the contamination is measurable rather than theoretical: its pit-loss estimate came out at 35.3 s against 20–25 s everywhere else, because in/out laps ran in damp conditions while the clean-pace reference came from dry laps. Stored for completeness and for later wet-weather work. **The training pool is now five circuits**, not six.
 
 ### Consequences of D5 for the sections above
@@ -1032,8 +1039,196 @@ stage: sampling is i.i.d. per lap, which is exactly the thing Challenge 5 says i
 insufficient. Phase 8 adds the hierarchical structure, and these numbers are the baseline
 improvement is measured against.
 
-### Phase 6 — next
+### Phase 6 — complete (2026-08-17)
 
-`RaceState` / `Scenario` with the temporal firewall: state built from a frame truncated
-at lap L so it *cannot* contain future information, enforced by a property test. This is
-also where the reference-pace gap above gets closed.
+`RaceState` / `Scenario` built, temporal firewall enforced structurally, and the Phase 5
+reference-pace gap closed. Merged into the Phase 7 run because the simulator is the only
+consumer that can tell whether the state is right.
+
+#### The firewall is tested by corruption, not by comparison
+
+`build_state` truncates to laps ≤ L as its first statement, so every field is a function
+of the truncated frame by construction. The property test does not merely compare the
+truncated and untruncated code paths — that only proves the two agree. It **overwrites
+every lap after L with garbage** (999 s lap times, 10⁹ cumulative times, spurious pit
+flags) and requires a bitwise-identical state. That proves no future row is read at all.
+
+`total_laps` is a required argument rather than a lookup, so a caller cannot accidentally
+pass a post-race lap count in place of the scheduled distance.
+
+#### Closing the reference-pace gap — de-trending through the model
+
+Phase 5 flagged that the pace target is measured against a whole-race median which the
+simulator cannot have. The fix inverts the model rather than ignoring it: each observed
+clean lap contributes `lap_time − model.predict(lap)`, an estimate of the same whole-race
+reference the model trained against, and the reference is the median of those.
+
+Measured over five circuits at decision laps 5–35 (n=397 driver-states):
+
+| Estimator | Bias | MAE |
+|---|---|---|
+| raw median of clean laps (Phase 5 behaviour) | +0.790 s | 0.810 s |
+| **de-trended through the model** | **+0.045 s** | **0.463 s** |
+
+A useful property falls out: a *constant* per-circuit offset in the pace model cancels
+exactly, because the implied reference absorbs `−c` and the projection adds it back. Only
+the **shape** of the model's error survives — which is precisely what Phase 7 then found.
+
+#### The fallback mattered more than the estimator
+
+At lap 15 only **74%** of drivers have three clean laps to their name; at lap 5, **9%**.
+A car in traffic generates almost none. The first version fell back to the *field's*
+reference pace, which hands a backmarker the pace of the field — and it was the single
+largest error source in the first replay run (Hungary's worst four race-time errors were
+MAG, BOT, ALB and RIC, all backmarkers).
+
+The replacement uses the fact that traffic is a **one-sided** penalty: a lap in a wake is
+slower than clean-air pace, never faster. So the fallback takes a low quantile of the
+de-trended implied references over the driver's green non-pit laps. On the drivers that
+need it, the 10th percentile beat 0.2/0.3/0.5 on both bias and MAE (+0.23 s / 0.75 s
+against +0.66 s / 0.95 s for the median).
+
+#### "Retired" without knowing the future
+
+At lap L nobody knows who is about to retire, and the state must not either. A driver is
+running if their last line crossing is recent relative to the leader's — a lapped car
+crosses the line every lap, a stopped car does not. A car that retires *during* lap L+1
+therefore still reads as running at lap L, which is correct: that is all the pit wall
+knows at that moment.
+
+### Phase 7 — complete (2026-08-17). **The gate passes, with its failures characterised.**
+
+Vectorised simulator plus leave-one-race-out replay validation. 134/134 tests pass,
+ruff clean. A 1,000-sim full-race replay runs in **0.15 s**.
+
+#### Result
+
+Gate (per the D5 consequences above, assessed on race time only): **median absolute
+race-time error < 1% of the projected window**.
+
+**17 / 20 replays pass. From decision lap 15 onwards, 14 / 15 pass.**
+
+| Decision lap | Clean-lap MAE | Clean-lap bias | Race-time error | 80% coverage |
+|---|---|---|---|---|
+| 5 | 1.214 s | +0.419 s | 0.946% | 0.11 |
+| 15 | 0.886 s | +0.274 s | **0.518%** | 0.20 |
+| 25 | 0.702 s | +0.277 s | **0.417%** | 0.28 |
+| 35 | 0.758 s | +0.214 s | **0.519%** | 0.21 |
+
+The three failures are `suzuka@L5` (2.26%), `suzuka@L15` (1.20%) and `austria@L5`
+(1.03%). Both failure modes were already flagged upstream: Suzuka is the circuit Phase 4
+(R² 0.31 before the restart fix) and Phase 5 (coverage 0.33/0.57/0.78) both named as the
+weak spot, and lap-5 states carry almost no observed pace to build a reference from.
+Reported, not excused.
+
+**Coverage is bad and expected to be** — 0.11–0.28 against a nominal 0.80. Sampling is
+i.i.d. per lap, so error cancels over 40 laps and the intervals collapse. This is
+Challenge 5 exactly, it is what Phase 8 exists to fix, and these are the numbers it will
+be measured against.
+
+#### The dominant error source was identified, not merely observed
+
+The first run showed a clean-lap bias that varied by circuit and would not average away.
+It is **entirely explained by the race-progress transfer error**: the pace model carries
+one pooled `lap_number` coefficient, while Phase 4 measured the true rate varying from
+−0.027 s/lap (Austria) to −0.096 s/lap (Suzuka). Under LORO the model cannot know which
+it faces.
+
+Regressing each circuit's implied-reference residual on lap number recovers exactly that
+gap — **r = 0.993** against the Phase 4 coefficient difference:
+
+| Circuit | β own | β pooled | gap | implied-reference slope |
+|---|---|---|---|---|
+| bahrain | −0.068 | −0.048 | −0.020 | −0.019 |
+| suzuka | −0.096 | −0.048 | −0.048 | −0.042 |
+| barcelona | −0.053 | −0.048 | −0.005 | −0.007 |
+| austria | −0.027 | −0.048 | +0.021 | +0.022 |
+| hungary | −0.041 | −0.048 | +0.007 | +0.011 |
+
+This is the Phase 4 limitation — per-circuit constants cannot be validated out-of-sample
+with one race per circuit — showing up downstream as a measured cost in seconds, rather
+than as a caveat.
+
+#### D13 — the race-progress residual is corrected in-race, with shrinkage
+
+Because the residual rate is observable *from the race in progress*, it can be estimated
+from laps ≤ L without breaching the firewall — which is what a race engineer does when
+the track comes to them faster than expected. The slope is fitted field-wide (fuel burn
+and track evolution are shared by everyone; pooling turns twenty noisy slopes into one),
+with driver level removed first.
+
+The shrinkage is not decoration. Swept over the full replay suite:
+
+| Shrink | Clean-lap MAE | Abs bias | Race-time error |
+|---|---|---|---|
+| 0 (unshrunk) | 1.075 s | 0.739 s | 0.877% |
+| 150 | 0.881 s | 0.485 s | 0.620% |
+| **300 (chosen)** | **0.890 s** | **0.485 s** | **0.599%** |
+| 600 | 0.909 s | 0.491 s | 0.592% |
+| off | 0.960 s | 0.538 s | 0.636% |
+
+**The unshrunk estimate is worse than no correction at all** — at lap 5 it extrapolates
+noise over 50 laps. Shrunk, it improves all three metrics at every decision lap. A
+variant controlling for tyre age per compound was tried and was *worse* (0.909 / 0.611 /
+0.764), so it was rejected.
+
+#### A coupling bug the replay caught: pit loss in the wrong currency
+
+The first run charged −1.73 s on every out-lap, the largest single error contributor
+(−913 s pooled). Neither estimate was wrong on its own — the *coupling* was. Phase 4
+measures pit loss against the driver's local median clean pace; the simulator charges it
+against `reference + model.predict(lap)`, and the model expects a tyre at age 1 to be
+**fast**. Reusing the Phase 4 number therefore credited every out-lap with a fresh-tyre
+bonus it never actually enjoyed.
+
+`fit_pit_loss` now measures the loss as the residual over what the model predicts for
+those two laps, making the two definitions consistent by construction. Pooled loss comes
+out at **23.2 s** against Phase 4's 21.9 s, with an in-lap share of **0.144**. Out-lap
+error fell from −1.73 s to −0.32 s.
+
+#### Errors are decomposed, not averaged away
+
+Per-category contributions sum exactly to the total race-time error, so the cost of what
+the MVP deliberately does not model is a number rather than a caveat:
+
+| Category | Laps | Mean error | Total | Share |
+|---|---|---|---|---|
+| pit_in | 527 | −0.554 s | −292 s | −15% |
+| **dirty_air** | **3,194** | **−0.070 s** | **−222 s** | **−11%** |
+| pit_out | 527 | −0.324 s | −171 s | −9% |
+| caution | 108 | +2.221 s | +240 s | +12% |
+| clean | 12,257 | +0.197 s | +2,420 s | +122% |
+
+The negative `dirty_air` contribution is the traffic bias D5 accepts, and it is
+**one-sided** as predicted: projections run optimistic for cars that were really stuck
+behind someone. At −0.07 s per dirty-air lap it is far smaller than the −1.0 s median
+dirty-air penalty measured in Phase 3, because the reference-pace estimator already
+absorbs part of a habitually-blocked driver's deficit into their level.
+
+#### Why the simulator has no lap loop
+
+The architecture doc specifies a loop over laps vectorised over sims, because per-lap
+steps 4–5 (dirty air, overtake resolution) couple drivers and must be resolved in track
+order. D5 defers both, and with them gone **no driver's lap time depends on any other's**.
+The tyre schedule is deterministic given the plan, so the whole race is one vectorised
+expression over `(n_sims, n_drivers, n_laps)`. This is a consequence of a scoping
+decision, not a shortcut: `build_schedule` still produces the per-lap frame a loop would
+walk, so restoring one at product-Phase 2 is local to `simulate_field`.
+
+#### Finding: this circuit set is almost caution-free
+
+Across all seven races there are **27 caution laps, 0.2% of all laps** — Austria's late
+VSC, plus Suzuka's and Monaco's lap-1 red flags. Consequences:
+
+- The caution lap-time multiplier (1.21) rests on one event and is nearly inert here.
+- `caution_pit_multiplier` is an **assumed 0.45, not fitted**: the store contains no
+  green-flag-to-caution stop pairs to fit it from, and Monaco's 16 stops were taken during
+  a stoppage where the cost is zero for a different reason. Flagged rather than quietly
+  fitted on unsuitable data.
+- Phase 8's safety-car scenario slider **cannot be calibrated from this circuit set** and
+  will need multi-year data, exactly as Challenge 3 anticipated.
+
+### Phase 8 — next
+
+Hierarchical MC noise and calibration. The baseline to beat is 80% interval coverage of
+**0.11–0.28** on race time (nominal 0.80), which i.i.d. per-lap sampling cannot fix.

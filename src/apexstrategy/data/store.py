@@ -51,6 +51,30 @@ def read_all(processed_dir: Path | None = None) -> dict[str, pd.DataFrame]:
     return {name: read_table(name, processed_dir) for name in TABLES_BY_NAME}
 
 
+def race_id_for(circuit: str, season: int | None = None) -> str:
+    return f"{season or config.SEASON}_{circuit}_{config.SESSION}"
+
+
+def race_laps(circuit: str, processed_dir: Path | None = None) -> pd.DataFrame:
+    """Every lap of one race, clean or not.
+
+    The simulator needs the excluded laps too: a pit-in lap still happened and still
+    consumed race time. ``training_laps`` is the model-fitting view; this is the
+    simulation view.
+    """
+    laps = read_table("laps", processed_dir)
+    out = laps[laps["circuit"] == circuit]
+    if out.empty:
+        raise KeyError(f"no laps stored for circuit {circuit!r}")
+    return out.reset_index(drop=True)
+
+
+def race_total_laps(circuit: str, processed_dir: Path | None = None) -> int:
+    """Scheduled race distance. A calendar fact, known before the race starts."""
+    results = read_table("results", processed_dir)
+    return int(results.loc[results["circuit"] == circuit, "total_laps"].max())
+
+
 def training_laps(processed_dir: Path | None = None) -> pd.DataFrame:
     """Clean laps from training circuits only.
 
