@@ -152,6 +152,10 @@ class DriverState:
     #: Whole-race reference pace, estimated from laps <= L. The level the pace model's
     #: predicted deltas are added to.
     reference_pace_s: float
+    #: How many clean laps that estimate rests on. Carried because it is how much the
+    #: state actually knows about this car, and Phase 8 widens its reference-pace
+    #: uncertainty accordingly -- a car with two clean laps is not pinned down.
+    clean_laps_observed: int = 0
 
     @property
     def is_running(self) -> bool:
@@ -380,6 +384,7 @@ def _driver_state(
         reference_pace_s=estimate_reference_pace(
             observed, pace_model, field_reference_s, progress_adjustment, anchor_lap=lap
         ),
+        clean_laps_observed=int((observed["is_clean"] & observed["lap_time_s"].notna()).sum()),
     )
 
 

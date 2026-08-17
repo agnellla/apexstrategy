@@ -646,6 +646,12 @@ Phase 7 is the hard gate. Everything after it is only as trustworthy as the repl
 - **D6 — Python 3.11**, managed by `uv`, not the system 3.13.
 - **D7 — Telemetry (`car_data`, `position_data`) is not ingested.** Measured: 337 MB of the 432 MB existing cache. Lap-level essentials are ~1.2 MB/race.
 - **D9 — Two front-ends, with different jobs.** Streamlit remains the *internal* tool (diagnostics, data-quality, replay validation) because it is fast to build and nobody needs it to be beautiful. A separate **Next.js showcase on Vercel**, fed by **precomputed scenario JSON**, carries the UI/UX story. Rationale: Streamlit's layout primitives actively fight design control, so making it beautiful is slow *and* still looks like Streamlit. Precomputing a discretised scenario grid (pit lap × compound × SC assumption) offline removes the need for any backend — no cold starts, instant interaction, zero hosting cost. Trade-off accepted: users can only explore grid points, not arbitrary scenarios, which is invisible in a portfolio demo. **Consequence for earlier phases:** the strategy engine must emit JSON-serialisable results, not objects coupled to Streamlit.
+- **D14 — Driver-level uncertainty is reference *sampling* error, split shared/private
+  (2026-08-17).** A driver's persistent model misfit (sd 0.359 s) cancels between the
+  reference estimate and the future residuals, so it is not sampled. What remains is
+  mostly field-wide — 76% of its variance at lap 5, 45% by lap 35 — and is drawn once per
+  simulation rather than per driver, because a shared error cannot change who beats whom
+  while a private one can. Do not merge the two back together.
 - **D13 — The race-progress residual is estimated in-race and shrunk (2026-08-17).** The
   pace model carries one pooled race-progress coefficient; the true per-circuit rate spans
   −0.027 to −0.096 s/lap, and under LORO that mismatch was the dominant replay error
@@ -1228,7 +1234,113 @@ VSC, plus Suzuka's and Monaco's lap-1 red flags. Consequences:
 - Phase 8's safety-car scenario slider **cannot be calibrated from this circuit set** and
   will need multi-year data, exactly as Challenge 3 anticipated.
 
-### Phase 8 — next
+### Phase 8 — complete (2026-08-17). **Exit criterion met, and partly by luck.**
 
-Hierarchical MC noise and calibration. The baseline to beat is 80% interval coverage of
-**0.11–0.28** on race time (nominal 0.80), which i.i.d. per-lap sampling cannot fix.
+Hierarchical noise and calibration. 152/152 tests pass, ruff clean.
+
+#### Result
+
+| Level | Nominal | Phase 7 (i.i.d.) | **Phase 8** |
+|---|---|---|---|
+| 50% | 0.50 | — | 0.559 |
+| **80%** | **0.80** | **0.11–0.28** | **0.814** |
+| 95% | 0.95 | — | 0.897 |
+
+Point estimates are untouched — the Phase 7 gate still passes 17/20 with the same three
+failures, which is the check that the decomposition changed only the spread.
+
+#### The honest caveat, stated first because it matters
+
+**The pooled pass is partly two errors cancelling.** Split by circuit:
+
+| | 50% | 80% | 95% | PIT mean |
+|---|---|---|---|---|
+| all five circuits | 0.559 | **0.814** | 0.897 | 0.409 |
+| excluding Suzuka | 0.649 | 0.912 | 0.956 | 0.461 |
+
+Suzuka's *point estimates* are biased (the circuit Phases 4, 5 and 7 all flagged), which
+pushes its coverage down; the other four circuits' intervals are still too wide, which
+pushes theirs up. Pooled, they land on nominal. Closing the remaining gap by narrowing the
+intervals would fix four circuits and break the fifth, on a sample of five races — so it
+is reported rather than tuned away. More seasons per circuit is the real fix.
+
+#### The variance components
+
+| Level | Drawn once per | Estimated sd |
+|---|---|---|
+| Race progress | sim | 0.018 s/lap |
+| Reference, field-wide | sim | 2.31/√N, capped at 1.0 s |
+| Reference, per car | sim × driver | 0.78/√n |
+| Stint level | sim × stint | 0.467 s |
+| Stint slope | sim × stint | 0.049 s/lap |
+| Pit stop | sim × stop | empirical, bootstrapped |
+| Lap | sim × driver × lap | empirical, sd 0.506, skew 2.30 |
+
+The upper levels are Gaussian and the lap level is not. That is deliberate: the upper
+levels are averages and slopes over many laps where the CLT applies, while a single lap's
+residual is right-skewed and a Gaussian would erase the slow tail strategy risk is about.
+Components were fitted by a random-slope decomposition with tyre age centred within each
+stint, which makes level and slope orthogonal so they can be sampled independently.
+
+#### D14 — the driver level is reference *sampling* error, and it is mostly shared
+
+The obvious driver-level term is the spread of `estimated reference − true reference`
+(0.44–1.21 s). Using it is wrong twice over.
+
+**First, most of it cancels.** Projection error is `(ref_hat − ref_true) − resid_future`,
+and a driver's persistent model misfit `mu_d` appears in both terms — the reference
+absorbs it from the observed laps and the future residuals give it back. Measured, `mu_d`
+has sd 0.359 s and is flat in the decision lap, confirming it is a driver property. Only
+the sampling fluctuation survives.
+
+**Second, most of what survives is field-wide, not private to a car.** The first
+calibration run was wrong in both directions at once — within-replay spread 1.68× too
+wide, between-replay too narrow. Splitting the residual by circuit and decision lap
+explains it: **76% of the reference-error variance at lap 5 is a field-wide shift**,
+falling to 45% by lap 35. That is what one would expect — a field-wide reference error
+means the model's pace *shape* is wrong for this circuit, which moves everyone together.
+
+The distinction is not cosmetic. A shared error cannot change who beats whom; a private
+one can. The split decides whether the tool is over- or under-confident about a
+*comparison*, which is the only thing it is actually asked for.
+
+#### Two double-counts the calibration exposed
+
+1. **The continuing stint's level was drawn twice.** The reference estimate is built from
+   the laps of the stint currently running, so it has already absorbed how good that set
+   of tyres is. Drawing a fresh level for it counted the same deviation twice. Its
+   *slope* is still drawn — a stint's level so far says little about how it will decay.
+2. **The field-wide reference term and the race-progress term are largely the same
+   thing.** They correlate at **0.824**, sharing 68% of variance: when D13's slope is
+   wrong by δ, the reference anchored through that slope moves with it (fitted at ~25δ,
+   consistent with a lever arm of half the decision lap). Applying both at full size made
+   the between-replay spread 1.43× too wide. The shared reference term is now the
+   component orthogonal to progress: k = 2.314 rather than 4.430.
+
+After both, the variance decomposition lines up with the observed error structure:
+
+| | Empirical | Simulated | Ratio |
+|---|---|---|---|
+| within-replay (idiosyncratic) | 25.8 s | 27.7 s | **1.07** |
+| between-replay (field-wide) | 25.8 s | 29.8 s | 1.16 |
+
+The within-replay ratio is the one that governs strategy comparisons, and it is the one
+that came out right. The between-replay figure rests on five numbers per decision lap and
+should not be over-read.
+
+#### Calibration is measured by PIT, not only by coverage
+
+Coverage at three levels can still hide a badly shaped distribution, so each outcome's
+probability integral transform is reported: the share of simulated draws at or below the
+truth, Uniform(0,1) under perfect calibration. Pooled it is mean 0.409 (target 0.500),
+sd 0.267 (target 0.289), tail share 0.134 (target 0.100).
+
+The reading is precise in a way a coverage number is not: **sd 0.267 says the intervals
+are still slightly too wide; mean 0.409 says the point estimate carries a residual bias**
+— and the by-circuit table above says that bias is Suzuka.
+
+### Phase 9 — next
+
+The strategy engine: candidate generation under the two-compound constraint, ranking on
+expected race-time delta with CVaR@10% as the risk column, evaluated in under 5 s. The
+simulator is fast enough (0.15 s per 1,000-sim race) that ~30 candidates is comfortable.

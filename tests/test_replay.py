@@ -62,6 +62,42 @@ class TestGate:
         assert decomp["share_of_total"].sum() == pytest.approx(1.0)
 
 
+class TestCalibration:
+    """Phase 8: the intervals have to mean what they say."""
+
+    def test_hierarchical_noise_is_on_by_default(self, held_out) -> None:
+        """i.i.d. per-lap sampling covered 11-28% at race level. Falling back to it
+        silently would look fine on every point-estimate metric."""
+        _, components = held_out
+        assert components.noise is not None
+
+    def test_race_time_intervals_are_not_collapsed(self, result) -> None:
+        m = result.metrics()
+        assert m["cover_80"] > 0.5, "variance has collapsed back to the Phase 7 behaviour"
+
+    def test_pit_values_span_the_unit_interval(self, result) -> None:
+        """Under-dispersed intervals pile the PIT up at 0 and 1 and leave the middle
+        empty; this is the cheap version of that check."""
+        pit = result.races["pit"]
+        assert pit.between(0.0, 1.0).all()
+        assert 0.1 < pit.std() < 0.45
+
+    def test_hierarchical_noise_widens_without_moving_the_point_estimate(self, held_out) -> None:
+        """The decomposition is about spread. If it shifts the median it is a bug."""
+        import dataclasses
+
+        model, components = held_out
+        flat = dataclasses.replace(components, noise=None)
+        args = {"from_lap": 25, "n_sims": 400, "pace_model": model}
+        wide = replay_race(GATE_CIRCUIT, components=components, **args)
+        narrow = replay_race(GATE_CIRCUIT, components=flat, **args)
+
+        assert wide.metrics()["cover_80"] > narrow.metrics()["cover_80"] + 0.2
+        assert wide.metrics()["race_time_median_pct"] == pytest.approx(
+            narrow.metrics()["race_time_median_pct"], abs=0.15
+        )
+
+
 class TestLeaveOneRaceOut:
     """The replay must not be fed anything estimated from the race it is replaying."""
 

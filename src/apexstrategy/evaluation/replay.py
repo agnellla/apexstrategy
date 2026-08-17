@@ -75,6 +75,11 @@ DIAGNOSTIC_CLEAN_LAP_MAE_S = 1.0
 #: measured and reported, not gated on.
 DIAGNOSTIC_CLEAN_LAP_BIAS_S = 0.30
 
+#: Interval levels coverage is reported at. 80% is the architecture doc's Phase 8 exit
+#: criterion; 50 and 95 are reported alongside because a decomposition can be right in the
+#: middle and wrong in the tails, and one level cannot tell you which.
+COVERAGE_LEVELS = (0.5, 0.8, 0.95)
+
 #: Default decision laps to replay from. Early states have little observed pace to build
 #: a reference from and a long horizon to compound it over; late states have the opposite.
 #: Reporting the sweep rather than one number is the point.
@@ -142,9 +147,10 @@ class ReplayResult:
             "race_time_mae_s": float(races["error_s"].abs().mean()),
             "race_time_median_pct": float(races["abs_pct"].median()),
             "race_time_bias_s": float(races["error_s"].mean()),
-            # Phase 8 baseline. i.i.d. per-lap sampling cancels over a race, so this is
-            # expected to be far below 0.80 until hierarchical noise arrives.
-            "race_time_cover_80": float(races["covered_80"].mean()),
+            **{
+                f"cover_{int(level * 100)}": float(races[f"covered_{int(level * 100)}"].mean())
+                for level in COVERAGE_LEVELS
+            },
         }
 
     def decomposition(self) -> pd.DataFrame:
@@ -265,18 +271,24 @@ def _compare_race_times(
 
         actual = float(end_t.iloc[0] - start_t.iloc[0])
         draws = sim.elapsed_s(driver, end)
-        lo, hi = np.quantile(draws, [0.1, 0.9])
-        rows.append(
-            {
-                "driver": driver,
-                "laps_compared": end - from_lap,
-                "actual_s": actual,
-                "predicted_s": float(np.median(draws)),
-                "error_s": float(np.median(draws)) - actual,
-                "abs_pct": abs(float(np.median(draws)) - actual) / actual * 100,
-                "covered_80": bool(lo <= actual <= hi),
-            }
-        )
+        predicted = float(np.median(draws))
+        row = {
+            "driver": driver,
+            "laps_compared": end - from_lap,
+            "actual_s": actual,
+            "predicted_s": predicted,
+            "error_s": predicted - actual,
+            "abs_pct": abs(predicted - actual) / actual * 100,
+            # Probability integral transform: where the truth fell in the predictive
+            # distribution. Under perfect calibration these are Uniform(0,1), which is a
+            # far stronger statement than any single interval's coverage -- and coverage
+            # at every level is recoverable from it.
+            "pit": float(np.mean(draws <= actual)),
+        }
+        for level in COVERAGE_LEVELS:
+            lo, hi = np.quantile(draws, [(1 - level) / 2, 1 - (1 - level) / 2])
+            row[f"covered_{int(level * 100)}"] = bool(lo <= actual <= hi)
+        rows.append(row)
     return pd.DataFrame(rows).sort_values("error_s").reset_index(drop=True)
 
 
@@ -318,7 +330,12 @@ def main(argv: list[str] | None = None) -> int:
 
     print("\n=== by decision lap (mean across circuits) ===")
     by_lap = summary.groupby("from_lap")[
-        ["clean_lap_mae_s", "clean_lap_bias_s", "race_time_median_pct", "race_time_cover_80"]
+        [
+            "clean_lap_mae_s",
+            "clean_lap_bias_s",
+            "race_time_median_pct",
+            *[f"cover_{int(level * 100)}" for level in COVERAGE_LEVELS],
+        ]
     ].mean()
     print(by_lap.round(3).to_string())
 

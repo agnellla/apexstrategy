@@ -18,11 +18,12 @@ uv run python -m apexstrategy.data.build --circuits bahrain   # one race, for it
 uv run python -m apexstrategy.models.train     # LORO model comparison, fit + persist
 uv run python -m apexstrategy.evaluation.replay              # Phase 7 gate, all circuits
 uv run python -m apexstrategy.evaluation.replay --circuits hungary --from-laps 25
+uv run python -m apexstrategy.evaluation.calibration        # Phase 8 coverage + PIT
 ```
 
 Always `uv run` — there is no active venv on PATH.
 
-## Decisions (D1–D13) — do not silently reverse these
+## Decisions (D1–D14) — do not silently reverse these
 
 | | Decision |
 |---|---|
@@ -38,6 +39,7 @@ Always `uv run` — there is no active venv on PATH.
 | **D10** | **Silverstone 2024 excluded from fitting** — 24.3% wet-compound laps vs a 5% dry threshold. Contamination was measured, not assumed: its pit loss came out 35.3s vs 20–25s elsewhere. **Training pool is 5 circuits**, not 6. |
 | **D11** | **The linear pace baseline ships; LightGBM does not.** LORO MAE 0.556 vs 0.626, degradation error 0.0137 vs 0.0174 s/lap. With 5 circuits, the GBM learns circuit-specific structure that does not transfer. Do not re-adopt a boosted model without beating these numbers. |
 | **D12** | **Dirty-air laps stay excluded, not a covariate.** Tested fairly (fixed clean test set, only training data varied): +39% data does not improve clean-lap prediction. Columns remain in the store; revisit when product-Phase 2 needs a traffic penalty. |
+| **D14** | **Driver-level uncertainty is reference *sampling* error, split shared/private.** A driver's persistent model misfit (sd 0.359s) cancels between the reference estimate and the future residuals, so it is not sampled at all. What remains is **mostly field-wide** — 76% of its variance at lap 5, 45% at lap 35 — and is drawn once per sim, not per driver: a shared error cannot change who beats whom, a private one can. Do not merge them back together. |
 | **D13** | **The race-progress residual is corrected in-race, with shrinkage.** The pace model has one pooled `lap_number` coefficient; true per-circuit rates span −0.027 to −0.096 s/lap, and under LORO that gap was the dominant replay error (r = 0.993). Corrected by regressing implied reference on lap number over laps ≤ L (firewall-safe), shrunk by `n/(n+300)`. **The unshrunk estimate is worse than no correction at all** — do not remove the shrinkage. |
 
 ## Design rules that are load-bearing
@@ -62,7 +64,12 @@ Always `uv run` — there is no active venv on PATH.
   *inside* the CV fold.
 - **Uncertainty is hierarchical, not per-lap.** i.i.d. per-lap noise cancels over a stint
   and yields absurdly confident answers. Sample persistent effects (car pace today, this
-  tyre set, an SC hitting everyone at once) at the level they live at.
+  tyre set, an SC hitting everyone at once) at the level they live at. Built in Phase 8
+  (`sim/noise.py`); coverage went 0.11–0.28 → 0.814 with point estimates unchanged.
+- **Check a variance component for double-counting before adding it.** Both errors found
+  in Phase 8 were the same effect entering twice from two directions. Calibration that is
+  wrong in *both* directions at once (too wide within, too narrow between) is the
+  signature: it means an effect is at the wrong level, not the wrong size.
 - **Explanations are arithmetic, not SHAP.** Recommendations come from the simulator, so
   they are explained by simulator ablation whose components sum to the headline number.
 - **Encode then verify.** Beliefs that could silently be wrong go into config and are
@@ -87,9 +94,11 @@ src/apexstrategy/
     state.py         RaceState/DriverState; the temporal firewall lives in build_state
     scenario.py      Scenario/PitInstruction; two-compound rule; observed_plans
     engine.py        vectorised MC; SimComponents (LORO-scoped constants)
+    noise.py         hierarchical variance components (D14)
   evaluation/
     loro.py          leave-one-race-out for the pace model
     replay.py        Phase 7 gate + CLI
+    calibration.py   Phase 8 coverage + PIT + CLI
 ```
 
 Modules are created in the phase that first needs them — absent directories are
@@ -139,8 +148,34 @@ tested and **did not help** (D12). Columns stay in the store for product-Phase 2
 
 Done: **0** (repo/env), **1** (ingest + contracts), **2+3** (gaps + dirty air),
 **4** (circuit constants), **5** (pace model), **6** (RaceState/Scenario + firewall),
-**7 (simulator + replay validation — the hard gate, PASSED)**.
-Next: **8** (hierarchical MC + calibration), 9 (strategy engine).
+**7 (simulator + replay validation — the hard gate, PASSED)**, **8** (hierarchical MC +
+calibration).
+Next: **9** (strategy engine: candidates, race-time ranking, CVaR).
+
+### Calibration (Phase 8)
+
+**80% race-time intervals cover 0.814** (nominal 0.80); 50% → 0.559, 95% → 0.897. Phase 7
+i.i.d. sampling covered 0.11–0.28.
+
+**Read this before "improving" it: the pooled pass is partly two errors cancelling.**
+Excluding Suzuka, coverage is 0.649/0.912/0.956 — the other four circuits' intervals are
+still too wide, and Suzuka's *point-estimate* bias pulls the pooled number back to
+nominal. Narrowing the intervals would fix four circuits and break the fifth, on a sample
+of five races. It is reported, not tuned away; more seasons per circuit is the real fix.
+
+- **PIT, not just coverage.** Each outcome's probability integral transform is recorded
+  (share of draws ≤ truth; Uniform(0,1) if calibrated). Pooled: mean 0.409 (target 0.500),
+  sd 0.267 (target 0.289), tail share 0.134 (target 0.100). sd < target ⇒ intervals still
+  slightly wide; mean ≠ 0.5 ⇒ residual point bias (Suzuka).
+- **Upper levels Gaussian, lap level not.** Levels/slopes are averages over many laps
+  (CLT applies); a single lap's residual has skew 2.30 and a Gaussian would erase the slow
+  tail that strategy risk lives in.
+- **Two double-counts were found by calibrating, and both are easy to reintroduce:**
+  the continuing stint's level is already in the reference (don't redraw it), and the
+  field-wide reference term correlates 0.824 with the race-progress term (shared k is the
+  orthogonal component, 2.314 not 4.430).
+- Validate against the error *structure*, not one number: within-replay sim/emp ratio
+  1.07, between-replay 1.16. The within-replay ratio is what governs strategy comparisons.
 
 ### Simulator + replay gate (Phase 7)
 
@@ -158,9 +193,6 @@ full-race replay runs in 0.15 s.
 Failures: `suzuka@L5`, `suzuka@L15`, `austria@L5` — both modes already flagged upstream
 (Suzuka is the known weak circuit; lap-5 states have almost no observed pace).
 
-- **Coverage is 0.11–0.28 against a nominal 0.80, and that is expected.** Sampling is
-  i.i.d. per lap, so error cancels over 40 laps. This is Challenge 5; Phase 8 fixes it.
-  These are the numbers to beat — do not "improve" coverage by widening per-lap noise.
 - **Replay is leave-one-race-out.** Both the pace model *and* the pit-loss sample are
   refitted per replayed circuit with that circuit held out. Circuit constants leak exactly
   like model weights (Part 13, risk 5).

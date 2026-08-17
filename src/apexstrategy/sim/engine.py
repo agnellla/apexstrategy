@@ -21,7 +21,8 @@ walk, so restoring one is local to ``simulate_field``.
 
 | Effect | Treatment |
 |---|---|
-| Pace, degradation, race progress | Pace model (Phase 5), sampled via ``predict_dist`` |
+| Pace, degradation, race progress | Pace model (Phase 5) for the mean |
+| Uncertainty | Hierarchical variance components (Phase 8, ``sim.noise``) |
 | Pit stop cost | Bootstrapped from observed green-flag stops, split across in/out lap |
 | Safety car / VSC laps | **Exogenous input.** Never predicted (Challenge 3) |
 | Traffic / dirty air | **Not modelled** (D5). Projections are clean-air times |
@@ -32,13 +33,17 @@ projected race times are optimistic for a car that would really have been stuck 
 someone. Rather than caveat it in prose, ``evaluation.replay`` measures it -- the replay
 error is decomposed by lap category, so the cost of the omission is a number.
 
-## Uncertainty at this phase is i.i.d. and therefore too narrow
+## Where the uncertainty comes from
 
-``predict_dist`` bootstraps per-lap residuals independently. Over a 40-lap stint those
-average out, so stint- and race-level intervals from this engine are too confident --
-exactly the variance collapse Challenge 5 warns about. Phase 8 adds the persistent
-per-driver and per-stint effects. The point estimates here are unaffected; only the
-spread is understated, and the replay gate is assessed on the point estimates.
+Phase 7 drew the spread from the pace model's own ``predict_dist``, which bootstraps
+per-lap residuals independently. Over a 40-lap horizon those average out and race-level
+80% intervals covered 11-28% of outcomes -- the variance collapse of Challenge 5.
+
+Phase 8 replaced it with ``sim.noise.NoiseModel``, which samples each effect at the level
+it lives at, and coverage moved to 0.81. The pace model is now called for its *mean* and
+the noise model for the spread; ``predict_dist`` remains the fallback when no noise model
+is supplied, purely so the Phase 7 result stays reproducible. Point estimates are
+identical either way.
 """
 
 from __future__ import annotations
@@ -49,6 +54,7 @@ import numpy as np
 import pandas as pd
 
 from ..data import store
+from .noise import NoiseModel
 from .scenario import PitInstruction, RivalPolicy
 from .state import RaceState
 
@@ -141,6 +147,10 @@ class SimComponents:
     pit_in_lap_share: float = DEFAULT_PIT_IN_LAP_SHARE
     caution_lap_multiplier: float = DEFAULT_CAUTION_LAP_MULTIPLIER
     caution_pit_multiplier: float = ASSUMED_CAUTION_PIT_MULTIPLIER
+    #: Phase 8 hierarchical noise. ``None`` falls back to the model's own i.i.d.
+    #: ``predict_dist``, which is the Phase 7 behaviour and is badly under-dispersed at
+    #: race level -- kept so the Phase 7 gate stays reproducible and the A/B is one flag.
+    noise: NoiseModel | None = None
 
     @classmethod
     def fit(cls, pace_model, exclude_circuit: str | None = None, **overrides) -> SimComponents:
@@ -156,7 +166,11 @@ class SimComponents:
         return cls(
             pace_model=pace_model,
             pit_loss_s=losses,
-            **{"pit_in_lap_share": share, **overrides},
+            **{
+                "pit_in_lap_share": share,
+                "noise": NoiseModel.fit(laps, pace_model),
+                **overrides,
+            },
         )
 
     def sample_pit_loss(self, size: tuple[int, ...], rng: np.random.Generator) -> np.ndarray:
@@ -326,13 +340,25 @@ def simulate_field(
     n_laps = to_lap - state.lap
     rng = np.random.default_rng(seed)
 
-    # The simulator only ever calls predict_dist, never predict: uncertainty is not
-    # optional at this boundary (see models/base.py).
     X = feature_frame(sched.assign(driver=sched["driver"].astype(str)))
-    deltas = components.pace_model.predict_dist(X, n_sims, rng)
-
     reference = np.array([state.by_code[d].reference_pace_s for d in drivers])
-    lap_times = deltas.reshape(n_sims, len(drivers), n_laps) + reference[None, :, None]
+
+    if components.noise is None:
+        # Phase 7 behaviour: the model's own i.i.d. residual bootstrap. Correct on the
+        # mean, far too confident on the spread, and kept only for comparison.
+        deltas = components.pace_model.predict_dist(X, n_sims, rng)
+        lap_times = deltas.reshape(n_sims, len(drivers), n_laps)
+    else:
+        mu = components.pace_model.predict(X).reshape(len(drivers), n_laps)
+        lap_times = mu[None, :, :] + components.noise.sample(
+            sched,
+            drivers,
+            {d: state.by_code[d].clean_laps_observed for d in drivers},
+            state.lap,
+            n_sims,
+            rng,
+        )
+    lap_times = lap_times + reference[None, :, None]
 
     # The part of race progress this race is showing that the pooled model does not
     # expect, measured in-race from laps <= L (see state.estimate_race_progress_adjustment).
