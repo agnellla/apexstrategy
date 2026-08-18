@@ -50,6 +50,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from typing import Protocol
 
 import numpy as np
 import pandas as pd
@@ -58,6 +59,21 @@ from ..data import store
 from .noise import NoiseModel
 from .scenario import PitInstruction, RivalPolicy
 from .state import RaceState
+
+
+class PaceModel(Protocol):
+    """All the simulator needs from a pace model.
+
+    Structural rather than a base class, so ``models.pace`` does not have to import from
+    ``sim`` to satisfy it and a caller can pass a stub without inheriting anything. It also
+    documents the seam D11 is fought over: any model that beats the linear baseline drops
+    in here and nowhere else.
+    """
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray: ...
+
+    def predict_dist(self, X: pd.DataFrame, n: int, rng: np.random.Generator) -> np.ndarray: ...
+
 
 #: Fallback share of a stop's cost charged to the in-lap rather than the out-lap, used
 #: only when there is no model to fit the split against. ``fit_pit_loss`` measures it.
@@ -77,7 +93,7 @@ DEFAULT_CAUTION_LAP_MULTIPLIER = 1.21
 ASSUMED_CAUTION_PIT_MULTIPLIER = 0.45
 
 
-def fit_pit_loss(laps: pd.DataFrame, pace_model) -> tuple[np.ndarray, float]:
+def fit_pit_loss(laps: pd.DataFrame, pace_model: PaceModel) -> tuple[np.ndarray, float]:
     """Measure pit loss *in the simulator's own currency*, and how it splits across laps.
 
     Phase 4's ``estimate_pit_loss`` charges a stop against the driver's local median clean
@@ -200,7 +216,7 @@ class SimComponents:
     parameters and leak exactly like model weights do (Part 13, risk 5).
     """
 
-    pace_model: object
+    pace_model: PaceModel
     #: Empirical green-flag pit losses, bootstrapped rather than fitted to a distribution:
     #: the tail of slow stops is the part that matters for risk and a Gaussian loses it.
     pit_loss_s: np.ndarray
@@ -213,7 +229,9 @@ class SimComponents:
     noise: NoiseModel | None = None
 
     @classmethod
-    def fit(cls, pace_model, exclude_circuit: str | None = None, **overrides) -> SimComponents:
+    def fit(
+        cls, pace_model: PaceModel, exclude_circuit: str | None = None, **overrides
+    ) -> SimComponents:
         from ..config import TRAINING_CIRCUITS
 
         laps = store.read_table("laps")
@@ -283,6 +301,34 @@ def build_schedule(
 
 
 @dataclass(frozen=True)
+class LapBreakdown:
+    """The additive pieces every projected lap time was assembled from, in seconds.
+
+    ``pace_s + noise_s + pit_s`` reconstructs ``lap_times_s`` to floating-point round-off
+    (~1e-14 s), by construction rather than by regression: the simulator adds each effect
+    in seconds, so keeping the addends is enough to explain the total. That is what makes
+    a Phase 10 explanation *arithmetically true* (Challenge 6) rather than an attribution
+    method's opinion about one. The round-off is the caution multiplier being applied to
+    the sum and divided back out of the parts; making it bitwise would mean changing the
+    order of operations in the default path, which is not worth 1e-14 s.
+
+    Captured only on request -- three more ``(n_sims, n_drivers, n_laps)`` arrays is 24 MB
+    at 1,000 sims, which is worth paying for the two plans being compared and not for the
+    hundred being ranked.
+    """
+
+    #: ``multiplier * (reference + model mean + race-progress adjustment)``. Deterministic
+    #: given the plan: everything the simulator claims to *know* about the lap.
+    pace_s: np.ndarray
+    #: ``multiplier * hierarchical noise``. Mean zero, so its contribution to a difference
+    #: between two plans is Monte Carlo residue and a measure of how settled that
+    #: difference is -- see ``strategy.explain``.
+    noise_s: np.ndarray
+    #: Pit-loss charged to the in-lap and out-lap of each stop.
+    pit_s: np.ndarray
+
+
+@dataclass(frozen=True)
 class SimulationResult:
     """Sampled lap times for every running driver over the projected laps.
 
@@ -302,6 +348,8 @@ class SimulationResult:
     seed: int
     rival_policy: RivalPolicy = "sim_pace"
     caution_laps: frozenset[int] = field(default_factory=frozenset)
+    #: Present only when ``simulate_field(capture=True)``. The addends of ``lap_times_s``.
+    breakdown: LapBreakdown | None = None
 
     @property
     def n_sims(self) -> int:
@@ -372,6 +420,7 @@ def simulate_field(
     caution_laps: frozenset[int] | None = None,
     rival_policy: RivalPolicy = "sim_pace",
     align: RandomAlignment | None = None,
+    capture: bool = False,
 ) -> SimulationResult:
     """Project every running driver to ``to_lap`` under their given plan.
 
@@ -388,6 +437,9 @@ def simulate_field(
         align: Declared draw sizes, so that two plans run under the same seed consume the
             same random numbers and their difference is paired. Required whenever results
             from different plans are subtracted; see ``RandomAlignment``.
+        capture: Keep the addends of every lap time in ``result.breakdown``. Costs three
+            more full-size arrays, so it is for the two plans being explained rather than
+            the hundred being ranked.
 
     Returns:
         A ``SimulationResult`` carrying the full ``(n_sims, n_drivers, n_laps)`` sample.
@@ -408,13 +460,18 @@ def simulate_field(
     reference = np.array([state.by_code[d].reference_pace_s for d in drivers])
 
     if components.noise is None:
+        if capture:
+            raise ValueError(
+                "component capture needs a noise model: the predict_dist fallback draws "
+                "the mean and the spread together and they cannot be separated afterwards"
+            )
         # Phase 7 behaviour: the model's own i.i.d. residual bootstrap. Correct on the
         # mean, far too confident on the spread, and kept only for comparison.
         deltas = components.pace_model.predict_dist(X, n_sims, rng)
         lap_times = deltas.reshape(n_sims, len(drivers), n_laps)
     else:
         mu = components.pace_model.predict(X).reshape(len(drivers), n_laps)
-        lap_times = mu[None, :, :] + components.noise.sample(
+        noise = components.noise.sample(
             sched,
             drivers,
             {d: state.by_code[d].clean_laps_observed for d in drivers},
@@ -423,6 +480,7 @@ def simulate_field(
             rng,
             n_stint_slots=align.stint_slots if align else None,
         )
+        lap_times = mu[None, :, :] + noise
     lap_times = lap_times + reference[None, :, None]
 
     # The part of race progress this race is showing that the pooled model does not
@@ -432,11 +490,26 @@ def simulate_field(
         offsets = np.arange(1, n_laps + 1) * state.race_progress_adjustment_s_per_lap
         lap_times += offsets[None, None, :]
 
+    multiplier = np.ones(n_laps)
     if caution:
         under = np.isin(np.arange(state.lap + 1, to_lap + 1), sorted(caution))
+        multiplier[under] = components.caution_lap_multiplier
         lap_times[:, :, under] *= components.caution_lap_multiplier
 
+    breakdown = None
+    if capture:
+        # Separating rather than recomputing: the noise field is already in hand, and the
+        # caution multiplier scaled it along with everything else, so scaling it the same
+        # way here reproduces its contribution exactly. `pace_s` is then the remainder,
+        # which is what keeps the three parts summing to the total by construction.
+        noise_s = noise * multiplier[None, None, :]
+        pace_s = lap_times - noise_s
+        before_pit = lap_times.copy()
+
     _apply_pit_losses(lap_times, sched, drivers, state.lap, caution, components, rng, align)
+
+    if capture:
+        breakdown = LapBreakdown(pace_s=pace_s, noise_s=noise_s, pit_s=lap_times - before_pit)
 
     return SimulationResult(
         race_id=state.race_id,
@@ -449,6 +522,7 @@ def simulate_field(
         seed=seed,
         rival_policy=rival_policy,
         caution_laps=caution,
+        breakdown=breakdown,
     )
 
 

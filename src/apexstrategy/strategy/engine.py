@@ -88,6 +88,7 @@ from .candidates import (
     is_physically_plausible,
     refine_candidates,
 )
+from .explain import TRAFFIC_BIAS_S_PER_DIRTY_AIR_LAP
 
 log = logging.getLogger(__name__)
 
@@ -536,6 +537,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-stops", type=int, default=DEFAULT_MAX_STOPS)
     parser.add_argument("--top", type=int, default=12, help="rows to print")
     parser.add_argument(
+        "--explain",
+        action="store_true",
+        help="decompose the recommendation's advantage into causes that sum to it",
+    )
+    parser.add_argument(
         "--baseline",
         choices=("best", "observed"),
         default="observed",
@@ -594,6 +600,32 @@ def main(argv: list[str] | None = None) -> int:
             "of each other and are not separated by this simulation:"
         )
         print("  " + "; ".join(close["label"].tolist()))
+
+    if args.explain and ranking.best is not ranking.baseline:
+        from .explain import explain
+
+        why = explain(
+            state,
+            ego,
+            ranking.best.scenario,
+            ranking.baseline.scenario,
+            components,
+            rival_plans=plans,
+        )
+        print(f"\n=== why: {why.plan.describe()} vs {ranking.baseline.label} ===")
+        print(why.table().round(2).to_string(index=False))
+        print(f"components reconcile to the simulated total to {why.residual_s:+.1e}s")
+        if not why.is_settled:
+            print(
+                f"sampling residue is {why.sampling_s:+.2f}s against a {why.total_s:+.2f}s "
+                "headline: this comparison is not settled, run more draws before quoting it"
+            )
+        print(
+            "Reference pace and race progress are absent because they cancel exactly --\n"
+            "both plans run the same laps of the same race. Traffic on rejoin is not\n"
+            f"modelled at all (D5); the replay puts that omission at "
+            f"{TRAFFIC_BIAS_S_PER_DIRTY_AIR_LAP:+.2f}s per dirty-air lap, one-sided optimistic."
+        )
     print(
         "delta_se_s is Monte Carlo error only. Simulator accuracy is the Phase 7 replay\n"
         "result (~0.5% of the projected window) and is larger; more draws do not shrink it."

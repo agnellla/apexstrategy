@@ -1526,10 +1526,114 @@ is left open rather than explained away.
   is Phase 8's: hierarchical noise changed the per-sim median slightly and moved
   `austria@L5` from 1.00% to 0.9622%. Phase 9 changed nothing here, verified bitwise.
 
-### Phase 10 — next
+### Phase 10 — complete (2026-08-18). **Components reconcile to 1e-15 s.**
 
-Explanation by simulator ablation (Challenge 6): decompose the recommended plan's advantage
-into components that sum exactly to the headline delta. The pieces are already separable —
-`NoiseModel.sample` adds every level in seconds, and pit loss, race progress and the
-reference level enter additively — so an ablation that zeroes one component at a time
-should reconcile to the total by construction rather than by regression.
+Explanation by decomposition (Challenge 6). 200/200 tests pass, ruff clean, and mypy is
+now clean over `sim/` and `strategy/` — the two long-standing `pace_model: object` errors
+are gone, replaced by a `PaceModel` protocol that documents the seam D11 is argued over.
+
+#### Result
+
+Exit criterion is **components sum to the total**. Measured residual on every explanation
+produced: **< 1e-14 s** against a headline of order 1–30 s, and `explain` raises rather
+than reports if it ever exceeds 1e-6 s. Hungary, lap 20, VER, two-stop against one-stop:
+
+| Component | Seconds |
+|---|---|
+| fresher rubber | −31.20 |
+| compound choice | −0.63 |
+| pit-lane time | +24.30 |
+| sampling residue | +0.53 |
+| **net** | **−7.01** |
+
+The extra stop costs 24.3 s in the pit lane and buys 31.2 s of fresher rubber. This is not
+a fit, a surrogate or an attribution method — it is the arithmetic the simulator already
+did, regrouped.
+
+#### Keeping the addends beats reconstructing them
+
+The simulator adds every effect in seconds, so `simulate_field(capture=True)` returns a
+`LapBreakdown` of the three addends and `pace_s + noise_s + pit_s` reconstructs
+`lap_times_s`. The alternative — ablation re-runs with one component disabled — was
+rejected: zeroing the pit-loss array changes `rng.choice`'s rejection sampling and moves
+the stream, so the "ablated" run is not the same run minus a term, and the differences
+would not have summed.
+
+Capture costs three more full-size arrays (24 MB at 1,000 sims), which is worth paying for
+the two plans being explained and not the hundred being ranked, so it is opt-in and off by
+default. The default path is bitwise unchanged — verified by MD5 of the full lap-times
+array, same as the Phase 9 check.
+
+The reconstruction is exact to float round-off (~1e-14 s) rather than bitwise, because the
+caution multiplier is applied to the sum and divided back out of the parts. Making it
+bitwise would mean changing the order of operations in the validated path, which is not
+worth 1e-14 s.
+
+#### The pace difference is split without asking the model how it works
+
+A per-lap pace difference mixes two causes: a different compound, and a different tyre age
+under it. Reading the fitted coefficients would work today — `pace_delta ~ C(compound) +
+C(compound):tyre_age + lap_number` is about as separable as a model gets — and would
+silently become wrong the moment a model with interactions replaced it, which is exactly
+the substitution D11 leaves open.
+
+Both orderings are evaluated and averaged instead, which needs nothing but `predict`:
+
+```
+age      = ½[ mu(cA, ageA) − mu(cA, ageB) ] + ½[ mu(cB, ageA) − mu(cB, ageB) ]
+compound = ½[ mu(cA, ageA) − mu(cB, ageA) ] + ½[ mu(cA, ageB) − mu(cB, ageB) ]
+```
+
+For two factors that is the Shapley value, and it sums to `mu(cA, ageA) − mu(cB, ageB)` as
+an algebraic identity. A test checks the two halves against the closed form for a
+deliberately separable stub model, so the split is verified against the right answer and
+not merely against itself.
+
+The counterfactual frames move `tyre_age`, `is_fresh_tyre` and `stint_number` together,
+because all three describe when the set was fitted; pulling one across without the others
+would build a frame describing a car that cannot exist.
+
+#### Two whole effects cancel, and that is worth showing
+
+Reference pace and the D13 race-progress correction do not appear in the decomposition
+because they contribute exactly zero to it: both plans run the same laps of the same race,
+so both terms enter both totals identically and vanish in the subtraction. The two largest
+terms in an *absolute* projection contribute nothing to a *comparison* — the same fact
+that makes Phase 9's pairing work. Two tests assert it by varying the reference pace by
+10 s and the progress slope by 0.04 s/lap and demanding an unchanged explanation.
+
+#### The sampling row is an honesty check, not a component
+
+The hierarchical noise is mean zero, so its contribution to a difference is zero in
+expectation and Monte Carlo residue in practice. Reporting it is what stops the
+decomposition quietly attributing residue to a cause: **if the sampling row is not small
+against the headline, the headline is not settled and the answer is more draws.**
+
+It is not automatically small. Plans with different stop counts are exposed to different
+numbers of tyre sets, and the stint-level effect on the extra set does not cancel — the
+irreducible 14.9 s of spread `RandomAlignment` documents. Hence 4,000 draws by default
+here against the ranking's 1,000, which leaves it at ~0.5 s on a 7 s headline.
+
+#### What the decomposition does not contain, stated rather than omitted
+
+The doc's worked example has four terms and this has two of them, so the missing pair
+ships inside the result object (`to_dict()["not_included"]`) rather than in a design
+document nobody reads at the point of use:
+
+- **Traffic on rejoin** — not modelled at all (D5). The replay puts the omission at
+  −0.07 s per dirty-air lap, ~11% of total replay error, one-sided: a plan that rejoins
+  into traffic is flattered by every number here.
+- **Safety-car option value** — cautions are exogenous and never predicted (Challenge 3),
+  so there is no distribution to take an expectation over. What can honestly be produced
+  is a contrast under an *assumed* caution: `caution_option_value` returns −1.13 s for
+  VER's two-stop against one-stop with a caution assumed on laps 30–32. The sign is more
+  trustworthy than the size — it leans on the caution lap multiplier (one VSC) and the
+  caution pit multiplier (**assumed, never fitted**, because the store contains no
+  green-flag-to-caution stop pairs).
+
+### Phase 11 — next
+
+Streamlit, three pages, provenance colouring (Part 10). The rule that matters is that the
+UI never computes: pages call `strategy.evaluate` / `strategy.explain` and render, so the
+core stays testable and headless. Everything those return is already JSON-serialisable
+(D9), which is also what the Next.js showcase will consume.

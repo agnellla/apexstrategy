@@ -20,7 +20,7 @@ uv run python -m apexstrategy.evaluation.replay              # Phase 7 gate, all
 uv run python -m apexstrategy.evaluation.replay --circuits hungary --from-laps 25
 uv run python -m apexstrategy.evaluation.calibration        # Phase 8 coverage + PIT
 uv run python -m apexstrategy.strategy                       # Phase 9 recommendation, demo race
-uv run python -m apexstrategy.strategy --circuit austria --lap 30 --driver VER
+uv run python -m apexstrategy.strategy --circuit austria --lap 30 --driver VER --explain
 ```
 
 Always `uv run` — there is no active venv on PATH.
@@ -73,7 +73,10 @@ Always `uv run` — there is no active venv on PATH.
   wrong in *both* directions at once (too wide within, too narrow between) is the
   signature: it means an effect is at the wrong level, not the wrong size.
 - **Explanations are arithmetic, not SHAP.** Recommendations come from the simulator, so
-  they are explained by simulator ablation whose components sum to the headline number.
+  they are explained by regrouping the simulator's own addends into components that sum to
+  the headline number. Not by *ablation*, which was the Phase 10 plan and is wrong here:
+  disabling a component changes what the RNG consumes, so an ablated run is not the same
+  run minus a term and the differences would not sum.
 - **Encode then verify.** Beliefs that could silently be wrong go into config and are
   asserted against the real source by a test. This caught a wrong event matcher on day one.
 
@@ -125,10 +128,11 @@ tested and **did not help** (D12). Columns stay in the store for product-Phase 2
 Done: **0** (repo/env), **1** (ingest + contracts), **2+3** (gaps + dirty air),
 **4** (circuit constants), **5** (pace model), **6** (RaceState/Scenario + firewall),
 **7 (simulator + replay validation — the hard gate, PASSED)**, **8** (hierarchical MC +
-calibration), **9** (strategy engine: candidates, race-time ranking, risk).
-Next: **10** (explanation by simulator ablation, components summing to the headline).
+calibration), **9** (strategy engine: candidates, race-time ranking, risk),
+**10** (explanation decomposition, components reconciling to 1e-15s).
+Next: **11** (Streamlit: 3 pages, provenance colouring — MVP complete).
 
-### Invariants from Phases 4–9
+### Invariants from Phases 4–10
 
 Numbers, tables and the full reasoning live in `docs/architecture-proposal.md`. These are
 the conclusions that are expensive to rediscover:
@@ -159,6 +163,19 @@ the conclusions that are expensive to rediscover:
 - **"The engine disagrees with what the team did" is not a validation.** It is one-sided
   by construction (the baseline is one of the candidates), the executed plan is sometimes
   a damage stop rather than a strategy, and counterfactuals are unobservable in principle.
+- **Explanations keep the simulator's addends, they do not re-run ablations.**
+  `simulate_field(capture=True)` returns the three terms that sum to each lap time.
+  Ablation by zeroing `pit_loss_s` would change `rng.choice`'s rejection sampling and move
+  the stream, so the differences would not have summed. Capture is opt-in: 24 MB per run.
+- **Reference pace and race progress contribute exactly zero to a comparison** — both
+  plans run the same laps, so both cancel. That is why they are absent from the
+  decomposition, and two tests assert it rather than the docstring claiming it.
+- **The compound/tyre-age split goes through `predict` only**, as a two-factor Shapley
+  average over both orderings. Reading the linear model's coefficients would work today
+  and break silently under the model swap D11 leaves open.
+- **The sampling row is the honesty check, not a component.** It is mean-zero, so its size
+  is Monte Carlo residue; if it is not small against the headline, the headline is not
+  settled. Plans with different stop counts keep an irreducible share of it.
 
 - **Read this before "improving" calibration: the pooled pass is partly two errors
   cancelling.** Four circuits' intervals are still too wide; Suzuka's *point-estimate*
