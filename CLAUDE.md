@@ -19,6 +19,8 @@ uv run python -m apexstrategy.models.train     # LORO model comparison, fit + pe
 uv run python -m apexstrategy.evaluation.replay              # Phase 7 gate, all circuits
 uv run python -m apexstrategy.evaluation.replay --circuits hungary --from-laps 25
 uv run python -m apexstrategy.evaluation.calibration        # Phase 8 coverage + PIT
+uv run python -m apexstrategy.strategy                       # Phase 9 recommendation, demo race
+uv run python -m apexstrategy.strategy --circuit austria --lap 30 --driver VER
 ```
 
 Always `uv run` — there is no active venv on PATH.
@@ -77,41 +79,15 @@ Always `uv run` — there is no active venv on PATH.
 
 ## Layout
 
-```
-src/apexstrategy/
-  config.py          paths, seeds, circuit registry (D3/D4)
-  data/
-    schema.py        TableSpec contracts; ConditionalSpec applies tight bounds to subsets
-    load.py          ONLY module that imports fastf1
-    clean.py         exclusion reasons (prioritised, mutually exclusive)
-    normalize.py     FastF1 -> the 6 tables
-    store.py         parquet IO; validates on WRITE; `training_laps()` enforces D3+D10
-  models/
-    circuit_constants.py  race-progress coef + pit loss, fitted per circuit
-    pace.py          LinearPaceBaseline (ships) + GBMPaceModel (rejected, D11)
-    train.py         CLI: LORO comparison, fit, persist
-  sim/
-    state.py         RaceState/DriverState; the temporal firewall lives in build_state
-    scenario.py      Scenario/PitInstruction; two-compound rule; observed_plans
-    engine.py        vectorised MC; SimComponents (LORO-scoped constants)
-    noise.py         hierarchical variance components (D14)
-  evaluation/
-    loro.py          leave-one-race-out for the pace model
-    replay.py        Phase 7 gate + CLI
-    calibration.py   Phase 8 coverage + PIT + CLI
-```
-
 Modules are created in the phase that first needs them — absent directories are
-deliberate, not missing work.
+deliberate, not missing work. Two structural invariants a directory listing does not
+show: **`data/load.py` is the only module that imports fastf1**, and **`data/store.py`
+validates on write**, not on read.
 
-## Store (7 tables, ~250 KB, `data/processed/`)
+## Store (7 tables, `data/processed/`)
 
-`laps` (8,304) · `stints` (432) · `pits` (296) · `results` (140) · `weather` (1,137) ·
-`track_status` (29) · `circuits` (8).
-
-**3,875 clean training laps** across the **5** trainable circuits (austria, bahrain,
-barcelona, hungary, suzuka). Overall clean-lap yield is 59.2% after dirty-air filtering;
-4,269 clean laps exist across 6 circuits before D10 removes Silverstone.
+The **5** trainable circuits are austria, bahrain, barcelona, hungary, suzuka. Clean-lap
+yield is 59.2% after dirty-air filtering.
 
 Models read via `store.training_laps()` — it applies `is_clean` plus the Monaco (D3) and
 Silverstone (D10) exclusions, so no model can forget either.
@@ -149,132 +125,97 @@ tested and **did not help** (D12). Columns stay in the store for product-Phase 2
 Done: **0** (repo/env), **1** (ingest + contracts), **2+3** (gaps + dirty air),
 **4** (circuit constants), **5** (pace model), **6** (RaceState/Scenario + firewall),
 **7 (simulator + replay validation — the hard gate, PASSED)**, **8** (hierarchical MC +
-calibration).
-Next: **9** (strategy engine: candidates, race-time ranking, CVaR).
+calibration), **9** (strategy engine: candidates, race-time ranking, risk).
+Next: **10** (explanation by simulator ablation, components summing to the headline).
 
-### Calibration (Phase 8)
+### Invariants from Phases 4–9
 
-**80% race-time intervals cover 0.814** (nominal 0.80); 50% → 0.559, 95% → 0.897. Phase 7
-i.i.d. sampling covered 0.11–0.28.
+Numbers, tables and the full reasoning live in `docs/architecture-proposal.md`. These are
+the conclusions that are expensive to rediscover:
 
-**Read this before "improving" it: the pooled pass is partly two errors cancelling.**
-Excluding Suzuka, coverage is 0.649/0.912/0.956 — the other four circuits' intervals are
-still too wide, and Suzuka's *point-estimate* bias pulls the pooled number back to
-nominal. Narrowing the intervals would fix four circuits and break the fifth, on a sample
-of five races. It is reported, not tuned away; more seasons per circuit is the real fix.
+- **Strategies are compared against common random draws, never independent ones.** Race
+  time has sd ~33s, almost all shared; the difference between two plans is a few seconds.
+  Paired, a comparison sharpens from sd 45.7s to 2.9s. Same seed is *not* enough —
+  `RandomAlignment` declares the stint and stop draw sizes, because a plan with more stops
+  draws a bigger array and decorrelates everything after it, including the per-lap noise.
+  That is exactly the one-stop-vs-two-stop comparison the product exists to make.
+  **`align=None` reproduces Phase 7/8 bitwise; keep it that way.**
+- **Pairing is what makes the argmax honest.** Picking the best of ~88 noisy candidates is
+  a winner's-curse setup; measured against a held-out seed the shrinkage is 0.00s median,
+  because pairing puts `delta_se_s` at ~0.1s. Drop the pairing and the selection bias
+  returns along with the variance.
+- **Risk is CVaR on the *difference*, not on race time.** Absolute-time CVaR is shared
+  noise and ranks nothing. `regret_s` grows with the size of the candidate set — compare
+  it within a ranking, never across two.
+- **The max-stint cap must bind on the "stay out" plan.** It is the plan most likely to
+  break the pace model (linear degradation extrapolates past the longest stint in the
+  store) and the one with no stop to filter on. Exempting it invented a 28.6s gain. A
+  *baseline* supplied for audit stays exempt on purpose — what a car ran is a fact — and
+  `recommend` warns instead.
+- **Candidate filters measure stints from where the tyre was fitted**, not from the
+  decision lap, so an immediate stop (the undercut, D4) is representable.
+  `Scenario.is_legal` is used for the two-compound rule only; its first-stint bound is the
+  wrong constraint here and a test pins the divergence.
+- **"The engine disagrees with what the team did" is not a validation.** It is one-sided
+  by construction (the baseline is one of the candidates), the executed plan is sometimes
+  a damage stop rather than a strategy, and counterfactuals are unobservable in principle.
 
-- **PIT, not just coverage.** Each outcome's probability integral transform is recorded
-  (share of draws ≤ truth; Uniform(0,1) if calibrated). Pooled: mean 0.409 (target 0.500),
-  sd 0.267 (target 0.289), tail share 0.134 (target 0.100). sd < target ⇒ intervals still
-  slightly wide; mean ≠ 0.5 ⇒ residual point bias (Suzuka).
-- **Upper levels Gaussian, lap level not.** Levels/slopes are averages over many laps
-  (CLT applies); a single lap's residual has skew 2.30 and a Gaussian would erase the slow
-  tail that strategy risk lives in.
-- **Two double-counts were found by calibrating, and both are easy to reintroduce:**
-  the continuing stint's level is already in the reference (don't redraw it), and the
-  field-wide reference term correlates 0.824 with the race-progress term (shared k is the
-  orthogonal component, 2.314 not 4.430).
-- Validate against the error *structure*, not one number: within-replay sim/emp ratio
-  1.07, between-replay 1.16. The within-replay ratio is what governs strategy comparisons.
-
-### Simulator + replay gate (Phase 7)
-
-**Gate: median absolute race-time error < 1% of the projected window. 17/20 replays pass;
-14/15 from decision lap 15 onwards.** Assessed on race time only, per D5. A 1,000-sim
-full-race replay runs in 0.15 s.
-
-| Decision lap | Clean-lap MAE | Race-time error | 80% coverage |
-|---|---|---|---|
-| 5 | 1.214 s | 0.946% | 0.11 |
-| 15 | 0.886 s | 0.518% | 0.20 |
-| 25 | 0.702 s | 0.417% | 0.28 |
-| 35 | 0.758 s | 0.519% | 0.21 |
-
-Failures: `suzuka@L5`, `suzuka@L15`, `austria@L5` — both modes already flagged upstream
-(Suzuka is the known weak circuit; lap-5 states have almost no observed pace).
+- **Read this before "improving" calibration: the pooled pass is partly two errors
+  cancelling.** Four circuits' intervals are still too wide; Suzuka's *point-estimate*
+  bias pulls the pooled number back to nominal. Narrowing would fix four circuits and
+  break the fifth, on a sample of five races. Reported, not tuned away.
+- **Two variance double-counts are easy to reintroduce:** the continuing stint's level is
+  already in the reference (don't redraw it), and the field-wide reference term correlates
+  with the race-progress term (use the component orthogonal to it).
+- **Validate uncertainty against the error *structure*, not one number** — within-replay
+  and between-replay spread separately. The within-replay ratio is what governs strategy
+  comparisons.
+- **Upper noise levels are Gaussian, the lap level is not.** Levels and slopes are
+  averages over many laps (CLT applies); a single lap's residual is right-skewed and a
+  Gaussian would erase the slow tail that strategy risk lives in.
 
 - **Replay is leave-one-race-out.** Both the pace model *and* the pit-loss sample are
   refitted per replayed circuit with that circuit held out. Circuit constants leak exactly
   like model weights (Part 13, risk 5).
-- **Pit loss must be measured in the simulator's currency.** Phase 4 charges a stop
+- **Do not point the simulator at `circuits.parquet`'s pit loss.** Phase 4 charges a stop
   against local median clean pace; the simulator charges against `reference + model(lap)`,
-  and the model expects an age-1 tyre to be fast. Reusing the Phase 4 number credited every
-  out-lap with a fresh-tyre bonus it never enjoyed: −1.73 s/out-lap, the largest single
-  error contributor. `engine.fit_pit_loss` fixes this (pooled 23.2 s, in-lap share 0.144).
-  **Do not point the simulator at `circuits.parquet`'s pit loss.**
+  and the model expects an age-1 tyre to be fast. Reusing the Phase 4 number credits every
+  out-lap with a fresh-tyre bonus it never enjoyed — it was the largest single error
+  contributor. `engine.fit_pit_loss` measures it in the right currency.
 - **No lap loop, deliberately.** With overtaking and traffic deferred (D5) no driver's lap
   time depends on another's, so the race vectorises over `(n_sims, n_drivers, n_laps)`.
   `build_schedule` still emits the per-lap frame, so restoring a loop at product-Phase 2
   is local to `simulate_field`.
-- **Errors are decomposed by lap category and sum exactly to the total.** The unmodelled
-  traffic bias is −0.07 s/dirty-air lap, −11% of total error, and one-sided (optimistic)
-  as predicted.
-
-### Race state (Phase 6)
-
-- **The firewall is tested by corruption.** `test_future_laps_cannot_influence_the_state`
-  overwrites every lap after L with garbage and demands a bitwise-identical state. A
-  truncated-vs-untruncated comparison only proves the two code paths agree; this proves no
-  future row is read.
-- **Reference pace is de-trended through the model**, not taken as a raw median: bias
-  +0.790 s → +0.045 s, MAE 0.810 → 0.463. A constant per-circuit model offset then cancels
-  exactly; only the shape of the error survives.
-- **The fallback matters more than the estimator.** At lap 15 only 74% of drivers have 3
-  clean laps; at lap 5, 9%. Falling back to the *field* reference hands a backmarker the
-  field's pace — it was the largest error in the first replay. Now a low quantile (0.1) of
-  the driver's own green laps, because traffic is a one-sided penalty.
+- **The firewall is tested by corruption, not comparison.**
+  `test_future_laps_cannot_influence_the_state` overwrites every lap after L with garbage
+  and demands a bitwise-identical state. A truncated-vs-untruncated comparison only proves
+  the two code paths agree; this proves no future row is read.
+- **Reference pace is de-trended through the model**, not taken as a raw median. A constant
+  per-circuit model offset then cancels exactly; only the shape of the error survives.
+- **The reference fallback matters more than the estimator.** At lap 15 only 74% of drivers
+  have 3 clean laps; at lap 5, 9%. Falling back to the *field* reference hands a backmarker
+  the field's pace — it was the largest error in the first replay. Use a low quantile (0.1)
+  of the driver's own green laps, because traffic is a one-sided penalty.
 - **`total_laps` is a required argument**, never looked up inside, so a post-race lap count
   cannot be passed by accident.
-
-### Caution data is too thin to calibrate on
-
-**27 caution laps across all seven races (0.2%)** — Austria's late VSC plus two lap-1 red
-flags. The caution lap multiplier (1.21) rests on one event, and
-`ASSUMED_CAUTION_PIT_MULTIPLIER = 0.45` is **assumed, not fitted**: no green-flag-to-caution
-stop pairs exist in the store. Phase 8's SC slider cannot be calibrated from this circuit
-set and needs multi-year data (Challenge 3).
-
-### Pace model (Phase 5 output, `models/pace_model.joblib`)
-
-Target is a **pace delta** — `lap_time_s − median(driver's clean laps that race)` — not
-raw lap time. Raw is not LORO-evaluable (circuit medians span 71–97s), and strategy needs
-differences anyway.
-
-Selected model is `LinearPaceBaseline` (D11), residual sd **0.73s**. `predict_dist`
-bootstraps empirical residuals — non-parametric because lap-time residuals are
-right-skewed and a Gaussian understates the slow tail that drives strategy risk.
-
-**Closed at Phase 6.** `sim.state.estimate_reference_pace` rebuilds the reference from
-laps ≤ L by de-trending through the model. See the Phase 6 notes below.
-
-**Coverage is good at 4 of 5 circuits but Suzuka is materially under-covered**
-(50/80/95 → 0.33/0.57/0.78). Expected: sampling is i.i.d. per lap, which Challenge 5 says
-is insufficient. Phase 8 fixes this; these are the baseline numbers to beat.
-
-Evaluate degradation recovery, not just MAE — a model can score well on MAE by predicting
-each driver's mean pace while learning nothing about tyre decay.
-
-### Circuit constants (Phase 4 output, `circuits.parquet`)
-
-It is a **race-progress** coefficient, not a fuel coefficient: fuel burn and track
-evolution are not separately identifiable from lap-level data, and the simulator needs
-only their sum (both are strategy-independent, so both cancel when comparing strategies
-at the same lap). Do not rename it back to "fuel".
-
-Pooled: **−0.0534 s/lap** (R² 0.97), which lands inside the independently-derived
-fuel-only physical prior of −0.05 to −0.08 — the strongest validation so far. Pooled pit
-loss **21.9s** over 204 dry green-flag stops.
-
-- **Prefer the pooled constant as the default.** With one race per circuit, per-circuit
-  constants **cannot be validated out-of-sample** (LORO holds out the only race a circuit
-  has). Per-circuit values are an in-sample refinement.
-- **Suzuka is the weak spot**: R² 0.31, SE 10× Bahrain's, coefficient ~3× pooled. Treat
-  with suspicion until the pace model gives a second opinion.
-- Pooled fits **must** include `C(circuit)` — without it R² collapses to 0.11 because the
-  model tries to explain 71s-vs-97s baseline lap times using compound and lap number.
-
-Phase 7 measured what this costs: under LORO the pooled coefficient is the **dominant**
-projection error (r = 0.993 against the per-circuit gap), now corrected in-race by D13.
+- **Caution data is too thin to calibrate on** — 27 caution laps across all seven races
+  (0.2%). The caution lap multiplier rests on one event, and
+  `ASSUMED_CAUTION_PIT_MULTIPLIER` is **assumed, not fitted**: no green-flag-to-caution
+  stop pairs exist in the store. Phase 8's SC slider needs multi-year data (Challenge 3).
+- **The pace target is a delta**, not raw lap time: raw is not LORO-evaluable because
+  circuit medians span 71–97s, and strategy needs differences anyway.
+- **Evaluate degradation recovery, not just MAE** — a model can score well on MAE by
+  predicting each driver's mean pace while learning nothing about tyre decay.
+- **It is a race-progress coefficient, not a fuel coefficient.** Fuel burn and track
+  evolution are not separately identifiable from lap-level data, and the simulator needs
+  only their sum (both are strategy-independent, so both cancel when comparing strategies
+  at the same lap). Do not rename it back to "fuel".
+- **Prefer the pooled circuit constant as the default.** With one race per circuit,
+  per-circuit constants **cannot be validated out-of-sample** (LORO holds out the only race
+  a circuit has). Per-circuit values are an in-sample refinement, and Suzuka's is the
+  weak one.
+- **Pooled fits must include `C(circuit)`** — without it R² collapses because the model
+  tries to explain 71s-vs-97s baseline lap times using compound and lap number.
 
 ## Style
 

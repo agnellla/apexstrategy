@@ -1339,8 +1339,197 @@ The reading is precise in a way a coverage number is not: **sd 0.267 says the in
 are still slightly too wide; mean 0.409 says the point estimate carries a residual bias**
 — and the by-circuit table above says that bias is Suzuka.
 
-### Phase 9 — next
+### Phase 9 — complete (2026-08-18). **Exit criterion met with 15× margin.**
 
-The strategy engine: candidate generation under the two-compound constraint, ranking on
-expected race-time delta with CVaR@10% as the risk column, evaluated in under 5 s. The
-simulator is fast enough (0.15 s per 1,000-sim race) that ~30 candidates is comfortable.
+The strategy engine: generate, prune, evaluate, rank. 185/185 tests pass, ruff clean,
+mypy clean over `sim/` and `strategy/` apart from two pre-existing `pace_model: object`
+attribute errors in `sim/engine.py`.
+
+#### Result
+
+Exit criterion is **20 candidates evaluated in under 5 s**. Measured over 100 decisions
+(5 circuits × decision laps 10/20/30/40 × the top 5 runners at each):
+
+| | median | max |
+|---|---|---|
+| candidates evaluated | 88 | 153 |
+| **seconds per 20 candidates** | **0.27** | **0.34** |
+
+Nothing failed and no state produced an empty candidate set. The typical run evaluates
+~90 candidates in under 3 s, so the doc's "target 15–30 surviving candidates" was set
+against a simulator slower than the one that got built. The grid was left honest rather
+than trimmed to hit a number: computing broadly is cheap, and `table(top=N)` presents
+narrowly.
+
+#### Candidates are compared against common random draws, and that is the whole design
+
+This is the single most consequential decision in the phase. Absolute projected race time
+over a 50-lap horizon has **sd 33 s**, nearly all of it shared across strategies — how
+fast the track came to the field today, how far the reference pace was off. The difference
+between two sensible pit plans is a handful of seconds. Measured at Hungary from lap 20,
+a lap-30 stop against a lap-36 stop:
+
+| Draws | sd of the difference | mean difference |
+|---|---|---|
+| independent seeds | 45.7 s | 8.9 s |
+| **common seed** | **2.9 s** | 8.9 s |
+
+Under independent draws a nine-second gap reads as a coin flip. Every reported quantity is
+therefore a function of the paired difference.
+
+**Seeding both runs identically is not sufficient.** `NoiseModel.sample` draws one block
+per *stint* and `_apply_pit_losses` one per *stop*, so a plan carrying more stops than any
+rival draws a larger array, leaves the generator somewhere else, and decorrelates
+everything after it — including the per-lap noise. That breaks exactly the comparison the
+product exists to make. One-stop against two-stop with the field frozen: sd **25.5 s** on
+the same seed, **14.9 s** once draw sizes are declared (`sim.engine.RandomAlignment`).
+
+The residual 14.9 s is real and must not be engineered away: a two-stop plan is genuinely
+exposed to one more set of tyres than a one-stop, and that stint-level effect is risk the
+two plans do not share. Pairing removes the luck they have in common; what survives is the
+strategy.
+
+`RandomAlignment` defaults to `None`, which reproduces the Phase 7/8 draw order exactly —
+verified by MD5 of the full `(n_sims, n_drivers, n_laps)` array before and after the
+change, and by the replay gate being unmoved.
+
+#### Pairing also makes the *selection* nearly unbiased
+
+The recommendation is the best of ~88 noisy candidates, which is a winner's-curse setup:
+the argmax of a noisy criterion overstates its own advantage. Measured by re-evaluating
+each chosen plan against the baseline on a **held-out seed** (30 decisions):
+
+| | median | mean |
+|---|---|---|
+| gain as selected | 1.54 s | 3.22 s |
+| gain on held-out draws | 1.47 s | 3.21 s |
+| **shrinkage** | **0.00 s** | **0.01 s** |
+
+Negligible, and it is negligible *because* of the pairing: `delta_se_s` is ~0.1 s, so
+selecting the maximum over 88 candidates costs almost nothing. Without common draws the
+per-candidate standard error would be ~1.4 s and the selection bias would run to several
+seconds. The variance reduction is not just cosmetic — it is what makes the argmax honest.
+
+#### Risk: CVaR on the difference, not on the race time
+
+The doc specifies CVaR@10%. Applied to absolute race time it mostly measures the shared
+uncertainty every candidate carries equally, so the column ranks nothing — it is reported
+(`cvar10_s`) but does no work. The column that carries risk is **`cvar10_delta_s`**: the
+mean of the worst tenth of the paired difference against the baseline. It is independent
+of how many candidates were enumerated and reads directly as "if this switch goes badly,
+this is how badly".
+
+It discriminates where expectation does not. Hungary lap 20, VER: the top-ranked plan
+gains 1.05 s over what was executed with a downside of 4.45 s, while a plan keeping the
+executed second stop gains 0.52 s with a downside of 1.25 s. Same race, same lap, a
+genuine expectation-versus-downside trade the ranking would otherwise hide.
+
+`regret_s` / `cvar10_regret_s` are also reported — regret against whichever plan won that
+same simulation, the only risk numbers that stay non-zero for the recommendation itself.
+**They grow with the size of the candidate set** (more options give the oracle more to win
+with), so they are comparable within a ranking and never across two.
+
+#### The physical filter has to bind on "stay out", and did not
+
+The max-stint cap is fitted from the store as the longest stint each dry compound has been
+seen to complete, as a share of race distance — HARD 0.586, MEDIUM 0.485, SOFT 0.379 —
+LORO-scoped like every other circuit constant. Two properties are worth stating: it is a
+*lower* bound on what is possible, because many of those stints ended at the flag
+(`is_censored`); and it is pooled across circuits, because one race per circuit makes a
+per-circuit maximum a single observation.
+
+The first version exempted the no-stop plan from it, on the reasoning that a car already
+past the cap must still get candidates. That reasoning is right for a stint with a stop
+after it — the shortest reachable length is `tyre_age + 1` — and wrong for staying out,
+where every remaining lap is a *choice*, not a constraint. The consequence was that the
+plan most likely to break the pace model was the one plan that could not be filtered:
+Hamilton at Hungary lap 40 was offered a 54-lap stint against a 41-lap cap, and the
+degradation term, being linear in tyre age, extrapolated thirteen laps past any stint in
+the store. The engine came back claiming an extra stop was worth **28.6 s** — a statement
+about the extrapolation, not about the tyres.
+
+Fixed by capping at `max(compound cap, tyre_age + 1)` uniformly, with running to the flag
+retained as a last resort when the grid is genuinely empty (a handful of laps from the
+end, where no stop leaves a stint worth running).
+
+A **baseline** supplied for audit stays exempt, deliberately: what a car actually ran is a
+fact, and refusing to evaluate it would make the post-race audit useless. `recommend` logs
+a warning instead, which fires on exactly the two states in the 100-decision sweep where
+the executed plan runs past the cap.
+
+#### The stint the car is already on counts, so the undercut is representable
+
+`Scenario.is_legal` measures the first stint from the decision lap, which makes an
+immediate stop look like a zero-lap stint and rejects it. That is the wrong constraint for
+candidate generation — a driver twenty laps into a set can pit next lap, and that move is
+the Hungary 2024 demo (D4). The filters in `strategy.candidates` therefore measure stints
+from where the tyre was fitted, adding `tyre_age` to the segment still to run;
+`is_legal` is still called for the two-compound rule it owns. A test pins both halves of
+that divergence so it cannot be tidied up later.
+
+#### Refinement moves only the next stop
+
+Coarse grid (step 4 within a 20-lap window for the next stop, step 8 beyond it), then the
+leaders' next stop re-searched to the lap. Refining *all* stops of six two-stop plans at
+±2 generates 150 combinations and swamps the coarse set it is meant to sharpen; refining
+only the next one keeps the pass linear in stop count. It is also the more defensible
+choice by the module's own argument — a stop thirty laps out will be re-decided at its own
+decision lap with evidence this state does not have, so picking it to the lap is false
+precision.
+
+Both passes share one seed and one `RandomAlignment`, so refined plans are paired with
+coarse ones and the union ranks as a single comparison.
+
+#### What the engine says about the races it was not trained on
+
+Over the 98 of 100 decisions whose executed plan is inside the model's support:
+
+| | |
+|---|---|
+| executed plan within 2 MC standard errors of the recommendation | 24 / 98 |
+| stop-count disagreement | 9 / 98 |
+| median time the engine says was on the table | 1.40 s |
+| 90th percentile / max | 6.14 s / 18.4 s |
+
+Agreement rises steadily with the decision lap — 4% at lap 10, 20% at 20, 28% at 30, 48%
+at 40 — which is the same story the replay gate tells: an early state has almost no
+observed pace to build a reference from. By circuit it tracks model quality too: Suzuka
+0.60 agreement and a median gain of 0.00 s, Bahrain 0.50 / 0.30 s, against Barcelona
+0.00 / 5.16 s.
+
+**None of this is a validation, and it must not be read as one.** Three reasons, all
+one-directional:
+
+1. **The comparison is one-sided by construction.** The baseline is one of the evaluated
+   candidates, so the reported gain is `max(0, ...)` before anything else happens.
+2. **The executed plan is not always a strategy.** Verstappen's Austria plan after lap 20
+   contains three stops including a lap-64 SOFT — the post-collision damage stop. The
+   store does not distinguish a forced stop from a chosen one, so the engine's "you lost
+   18 s" is arithmetically true and strategically vacuous. It accounts for the four
+   largest disagreements in the sweep.
+3. **Counterfactuals are unobservable.** No amount of agreement or disagreement with a
+   real pit wall tests a strategy nobody ran. Phase 7 validated reproduction and Phase 8
+   validated spread; the counterfactual itself is not checkable, and that limit belongs in
+   the UI rather than in an argument.
+
+Barcelona's 5.16 s median with zero agreement is the one number here worth chasing, and it
+is left open rather than explained away.
+
+#### Notes
+
+- `simulate_field` is fast enough (0.028 s per candidate at 1,000 sims over a full field)
+  that the ego-only optimisation D5 permits — no driver's lap time depends on another's,
+  so projecting the ego alone would be exact rather than approximate — was measured,
+  found unnecessary, and not built. A test asserts the independence property instead, so
+  that coupling rivals in product-Phase 2 breaks it loudly.
+- The replay gate now passes **18/20**, not the 17/20 recorded at Phase 7. The improvement
+  is Phase 8's: hierarchical noise changed the per-sim median slightly and moved
+  `austria@L5` from 1.00% to 0.9622%. Phase 9 changed nothing here, verified bitwise.
+
+### Phase 10 — next
+
+Explanation by simulator ablation (Challenge 6): decompose the recommended plan's advantage
+into components that sum exactly to the headline delta. The pieces are already separable —
+`NoiseModel.sample` adds every level in seconds, and pit loss, race progress and the
+reference level enter additively — so an ablation that zeroes one component at a time
+should reconcile to the total by construction rather than by regression.

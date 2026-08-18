@@ -206,12 +206,18 @@ class NoiseModel:
         from_lap: int,
         n_sims: int,
         rng: np.random.Generator,
+        n_stint_slots: int | None = None,
     ) -> np.ndarray:
         """Draw an ``(n_sims, n_drivers, n_laps)`` additive noise field.
 
         Every component is added in seconds, so the total is a straightforward sum and
         the contribution of each level can be read off by zeroing the others -- which is
         what the Phase 10 explanation decomposition will need.
+
+        ``n_stint_slots`` fixes how many stint effects are drawn rather than letting the
+        schedule decide. Two pit plans then consume the generator identically and their
+        difference is paired, which is what makes a strategy comparison readable -- see
+        ``engine.RandomAlignment``. ``None`` is the Phase 8 behaviour.
         """
         laps = np.sort(schedule["lap_number"].unique())
         n_drivers, n_laps = len(drivers), len(laps)
@@ -254,9 +260,14 @@ class NoiseModel:
         )
 
         # 3-4. Stint level and slope: persistent within a stint, resampled at each stop.
+        # Unused slots are drawn and discarded so that the stream position after this
+        # block -- and therefore the per-lap noise below -- is the same for every plan.
+        slots = n_stints if n_stint_slots is None else n_stint_slots
+        if slots < n_stints:
+            raise ValueError(f"n_stint_slots={slots} is below the {n_stints} stints scheduled")
         d_idx = np.arange(n_drivers)[:, None]
-        level = rng.normal(0.0, self.stint_level_sd, size=(n_sims, n_drivers, n_stints))
-        slope = rng.normal(0.0, self.stint_slope_sd, size=(n_sims, n_drivers, n_stints))
+        level = rng.normal(0.0, self.stint_level_sd, size=(n_sims, n_drivers, slots))
+        slope = rng.normal(0.0, self.stint_slope_sd, size=(n_sims, n_drivers, slots))
         if self.continuing_stint_level_observed:
             # Stint index 0 is the one already running at lap L. Its level is in the
             # reference already; only stints started by a future stop are unknown.

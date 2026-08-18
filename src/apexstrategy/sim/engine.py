@@ -48,6 +48,7 @@ identical either way.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -129,6 +130,65 @@ def fit_pit_loss(laps: pd.DataFrame, pace_model) -> tuple[np.ndarray, float]:
     losses = (stops["excess_s"] + stops["next_excess_s"]).to_numpy()
     share = float(np.median(stops["excess_s"]) / np.median(losses))
     return losses, share
+
+
+@dataclass(frozen=True)
+class RandomAlignment:
+    """Declared draw sizes that make the random stream independent of the pit plan.
+
+    Two strategies are compared by the *difference* in their race times, and that
+    difference only carries information if both were run against the same luck.
+    Everything the two share -- how fast the track came to the field today, how far the
+    reference pace was off, whether this was a good set of tyres -- then cancels in the
+    subtraction, and what survives is the strategy.
+
+    Measured on Hungary from lap 20 over 2,000 sims, a lap-30 stop against a lap-36 stop:
+    the difference has sd **2.9 s** under common draws against **45.7 s** under
+    independent ones, on a mean difference of 8.9 s. Independent draws call a
+    nine-second gap a coin flip.
+
+    Passing both runs the same seed is not sufficient on its own. ``NoiseModel.sample``
+    draws one block per *stint* and ``_apply_pit_losses`` one per *stop*, so a plan with
+    more stops than any rival draws a larger array, leaves the generator in a different
+    place, and every component after it -- including the per-lap noise -- decorrelates.
+    Same race and lap, a one-stop against a two-stop with the field frozen: sd **25.5 s**
+    on the same seed, **14.9 s** once the sizes are declared.
+
+    That 14.9 s does not go away with better bookkeeping, and should not. A two-stop plan
+    is genuinely exposed to one more set of tyres than a one-stop, and the stint-level
+    effect on that extra set is a real risk the plans do not share. Pairing removes the
+    luck the two strategies have in common; what it leaves is the part that is actually
+    about the strategy, which is what the CVaR column then measures.
+
+    Both blocks are drawn at the largest size any compared plan needs and indexed down, so
+    the stream depends on the state and the seed alone. ``None`` leaves the Phase 7/8 draw
+    order untouched, which is why the replay and calibration numbers stay reproducible.
+    """
+
+    #: Stints per driver: the one running at lap L plus one started by each future stop.
+    stint_slots: int
+    #: Future stops per driver.
+    stop_slots: int
+
+
+def alignment_for(
+    plan_sets: Iterable[dict[str, tuple[PitInstruction, ...]]], from_lap: int
+) -> RandomAlignment:
+    """Sizes wide enough for every plan set that is going to be compared with the others.
+
+    Sized over *all* drivers, not just the one whose strategy varies: the noise blocks are
+    rectangular over the field, so a rival with three stops sets the floor as surely as
+    the ego does.
+    """
+    stops = max(
+        (
+            sum(1 for p in plan if p.lap > from_lap)
+            for plans in plan_sets
+            for plan in plans.values()
+        ),
+        default=0,
+    )
+    return RandomAlignment(stint_slots=stops + 1, stop_slots=stops)
 
 
 @dataclass(frozen=True)
@@ -311,6 +371,7 @@ def simulate_field(
     to_lap: int | None = None,
     caution_laps: frozenset[int] | None = None,
     rival_policy: RivalPolicy = "sim_pace",
+    align: RandomAlignment | None = None,
 ) -> SimulationResult:
     """Project every running driver to ``to_lap`` under their given plan.
 
@@ -324,6 +385,9 @@ def simulate_field(
         to_lap: Defaults to the scheduled race distance.
         caution_laps: Laps run under SC/VSC. **Exogenous** -- an assumption supplied by
             the caller or replayed from observation, never a prediction (Challenge 3).
+        align: Declared draw sizes, so that two plans run under the same seed consume the
+            same random numbers and their difference is paired. Required whenever results
+            from different plans are subtracted; see ``RandomAlignment``.
 
     Returns:
         A ``SimulationResult`` carrying the full ``(n_sims, n_drivers, n_laps)`` sample.
@@ -357,6 +421,7 @@ def simulate_field(
             state.lap,
             n_sims,
             rng,
+            n_stint_slots=align.stint_slots if align else None,
         )
     lap_times = lap_times + reference[None, :, None]
 
@@ -371,7 +436,7 @@ def simulate_field(
         under = np.isin(np.arange(state.lap + 1, to_lap + 1), sorted(caution))
         lap_times[:, :, under] *= components.caution_lap_multiplier
 
-    _apply_pit_losses(lap_times, sched, drivers, state.lap, caution, components, rng)
+    _apply_pit_losses(lap_times, sched, drivers, state.lap, caution, components, rng, align)
 
     return SimulationResult(
         race_id=state.race_id,
@@ -395,23 +460,43 @@ def _apply_pit_losses(
     caution_laps: frozenset[int],
     components: SimComponents,
     rng: np.random.Generator,
+    align: RandomAlignment | None = None,
 ) -> None:
     """Charge each stop's cost across its in-lap and out-lap, in place.
 
     One loss is drawn per (sim, stop) and *split* between the two laps rather than drawn
     twice, because the in-lap and out-lap excesses are two halves of one physical event.
     Drawing independently would halve the variance of a stop's cost.
-    """
-    stops = sched.loc[sched["is_pit_in"], ["driver", "lap_number"]]
-    if stops.empty:
-        return
 
+    Under ``align`` the losses come from one block indexed by (driver, stop ordinal)
+    instead of one draw per stop in schedule order, so that a driver's second stop meets
+    the same pit crew whether the plan in front of it had one stop or three.
+    """
+    stops = sched.loc[sched["is_pit_in"], ["driver", "lap_number"]].sort_values(
+        ["driver", "lap_number"]
+    )
     n_sims = lap_times.shape[0]
     index = {d: i for i, d in enumerate(drivers)}
     share = components.pit_in_lap_share
 
-    for row in stops.sort_values(["driver", "lap_number"]).itertuples():
-        loss = components.sample_pit_loss((n_sims,), rng)
+    # Drawn before the empty check and at the declared size, so how much of the stream a
+    # plan consumes does not depend on how many stops the plan happens to contain.
+    block = None
+    if align is not None:
+        needed = int(stops.groupby("driver").size().max()) if len(stops) else 0
+        if needed > align.stop_slots:
+            raise ValueError(f"a driver has {needed} stops but stop_slots={align.stop_slots}")
+        block = components.sample_pit_loss((n_sims, len(drivers), align.stop_slots), rng)
+
+    if stops.empty:
+        return
+
+    for row in stops.assign(ordinal=stops.groupby("driver").cumcount()).itertuples():
+        loss = (
+            components.sample_pit_loss((n_sims,), rng)
+            if block is None
+            else block[:, index[row.driver], row.ordinal]
+        )
         if row.lap_number in caution_laps:
             loss = loss * components.caution_pit_multiplier
 
