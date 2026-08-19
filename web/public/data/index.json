@@ -16,7 +16,7 @@
       "in_training_pool": true,
       "n_decisions": 24,
       "clean_yield": 0.63,
-      "size_kb": 146.0
+      "size_kb": 188.7
     },
     {
       "circuit": "suzuka",
@@ -26,7 +26,7 @@
       "in_training_pool": true,
       "n_decisions": 24,
       "clean_yield": 0.568,
-      "size_kb": 146.8
+      "size_kb": 186.4
     },
     {
       "circuit": "monaco",
@@ -46,7 +46,7 @@
       "in_training_pool": true,
       "n_decisions": 24,
       "clean_yield": 0.659,
-      "size_kb": 157.0
+      "size_kb": 199.7
     },
     {
       "circuit": "austria",
@@ -56,7 +56,7 @@
       "in_training_pool": true,
       "n_decisions": 24,
       "clean_yield": 0.634,
-      "size_kb": 161.5
+      "size_kb": 209.4
     },
     {
       "circuit": "britain",
@@ -76,7 +76,7 @@
       "in_training_pool": true,
       "n_decisions": 24,
       "clean_yield": 0.655,
-      "size_kb": 158.3
+      "size_kb": 206.6
     }
   ],
   "provenance": {

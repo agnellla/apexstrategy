@@ -79,3 +79,23 @@ export const pct = (v: number, digits = 0) => `${(v * 100).toFixed(digits)}%`;
 
 /** The engine writes plans as "L22 HARD -> L45 HARD". The arrow is a real arrow on screen. */
 export const planLabel = (label: string) => label.replace(/\s*->\s*/g, " \u2192 ");
+
+/** Laps whose best plan is within `n` Monte Carlo standard errors of the best overall.
+ *
+ * The window is not "the best lap plus or minus two". It is every lap the simulation
+ * cannot tell apart from the best one, which is a claim about what was measured rather
+ * than a rule of thumb, and it is usually asymmetric: boxing early costs little and
+ * boxing late falls off a cliff. */
+export function windowLaps(points: { lap: number; delta_s: number }[], tolerance = 0.25) {
+  if (!points.length) return [];
+  const best = Math.min(...points.map((p) => p.delta_s));
+  return points.filter((p) => p.delta_s - best <= tolerance).map((p) => p.lap);
+}
+
+/** What one more lap of waiting costs, measured at the edge of the window. */
+export function costOfWaiting(points: { lap: number; delta_s: number }[], fromLap: number) {
+  const here = points.find((p) => p.lap === fromLap);
+  const next = points.find((p) => p.lap === fromLap + 1);
+  if (!here || !next) return null;
+  return next.delta_s - here.delta_s;
+}

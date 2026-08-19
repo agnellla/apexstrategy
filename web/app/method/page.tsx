@@ -20,6 +20,14 @@ export default function Method() {
           numbers it produced, and the parts of the problem the build deliberately does not
           touch. Nothing here is softened for the demo.
         </p>
+        <p className="note">
+          <strong>The one to read first:</strong> there is no overtaking model, so nothing
+          on this site knows about track position. It will tell you a stop is worth a second
+          and it cannot tell you whether you come out ahead of the car you are racing. On a
+          circuit where the answer is decided by who you rejoin behind, that gap is the
+          whole question, and the tool is silent on it by construction rather than by
+          oversight.
+        </p>
       </header>
 
       <Panel title="The gate" meta="Phase 7">

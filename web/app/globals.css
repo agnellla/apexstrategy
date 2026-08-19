@@ -1,19 +1,66 @@
 /*
-  ApexStrategy showcase, design tokens.
+  ApexStrategy, design tokens.
 
-  Register: an engineering report, not a product landing page. The project's whole
-  character is measured claims and stated limitations, so the surface it ships on is
-  paper and ink with hairline rules, tabular figures, and square corners. Nothing here
-  glows, floats, or animates on hover.
+  Dark first, because the surface this imitates is a pit wall screen rather than a report:
+  dense, high contrast, tabular, read in eleven seconds under a canopy in daylight. The
+  paper theme is still here as the alternate, and the documentation pages are the ones it
+  suits.
 
-  Chart colour is validated, not chosen by eye. The three compound hues clear the
-  lightness band, chroma floor, all-pairs CVD separation and normal-vision floor in both
-  modes. The light amber sits at 2.7:1 against paper, below the 3:1 line, so it ships
-  under the relief rule: every compound mark carries a visible text label and every chart
-  has a table view.
+  "Futuristic" here means instrument-grade, not sci-fi: no glow, no glass, no gradient, no
+  motion. What makes a timing screen feel advanced is information density and figures that
+  do not shift width as they tick.
+
+  Chart colour is validated, not chosen by eye. The three compound hues clear the lightness
+  band, chroma floor, all-pairs CVD separation and normal-vision floor against both
+  surfaces (worst dark pair 11.0 CVD / 15.8 normal). The light-theme amber sits at 2.7:1
+  against paper, below the 3:1 line, so it ships under the relief rule: every compound mark
+  carries a visible text label and every chart has a table view.
 */
 
 :root {
+  color-scheme: dark;
+
+  --paper: #12161a;
+  --surface: #171c21;
+  --surface-sunk: #0d1114;
+  --ink: #eef1f3;
+  --ink-2: #a6aeb5;
+  --ink-3: #737c83;
+  --rule: #262d34;
+  --rule-strong: #3b444c;
+
+  --accent: #3d9bc7;
+  --accent-ink: #0c0f11;
+
+  --soft: #bf4c36;
+  --medium: #c08a00;
+  --hard: #3d9bc7;
+
+  --gain: #3d9bc7;
+  --loss: #bf4c36;
+  --neutral: #8a9299;
+
+  --observed: #eef1f3;
+  --predicted: #3d9bc7;
+  --simulated: #3d9bc7;
+  --counterfactual: #bf4c36;
+
+  --font-display: var(--font-newsreader), Georgia, "Times New Roman", serif;
+  --font-ui: var(--font-plex-sans), system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, monospace;
+
+  --measure: 68ch;
+}
+
+/*
+  There is deliberately no prefers-color-scheme switch. The dark instrument surface is the
+  design, not a mode: this is a pit wall screen, and rendering it as a cream document on
+  half the machines that open it would be two identities rather than one. The light palette
+  below stays validated and reachable by stamping data-theme="light" on the root, which is
+  also what keeps the print rules honest, but nothing in the UI toggles it and nothing is
+  stored about you to remember a choice.
+*/
+:root[data-theme="light"] {
   color-scheme: light;
 
   --paper: #f4f1ea;
@@ -28,91 +75,18 @@
   --accent: #00658f;
   --accent-ink: #ffffff;
 
-  /* Tyre compounds. Validated as a categorical set against --paper. */
   --soft: #a32b1e;
   --medium: #c4881c;
   --hard: #00658f;
 
-  /* Diverging, for the decomposition waterfall: time gained against time lost.
-     Same two poles as the categorical set, reused deliberately so the palette stays
-     small; no chart mixes compounds and decomposition terms. */
   --gain: #00658f;
   --loss: #a32b1e;
   --neutral: #6f6a60;
 
-  /* Provenance. Part 10 makes this a hard requirement: the difference between an honest
-     tool and a misleading one is whether a projection can be mistaken for a measurement.
-     Class is carried by treatment first (solid, band, dash, fan) and hue second. */
   --observed: #171614;
   --predicted: #00658f;
   --simulated: #00658f;
   --counterfactual: #a32b1e;
-
-  --font-display: var(--font-newsreader), Georgia, "Times New Roman", serif;
-  --font-ui: var(--font-plex-sans), system-ui, sans-serif;
-  --font-mono: var(--font-plex-mono), ui-monospace, monospace;
-
-  --measure: 68ch;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    color-scheme: dark;
-
-    --paper: #191817;
-    --surface: #211f1d;
-    --surface-sunk: #131211;
-    --ink: #f2efe8;
-    --ink-2: #b0aba0;
-    --ink-3: #837e74;
-    --rule: #33302c;
-    --rule-strong: #4c4842;
-
-    --accent: #3d9bc7;
-    --accent-ink: #101010;
-
-    --soft: #bf4c36;
-    --medium: #c08a00;
-    --hard: #3d9bc7;
-
-    --gain: #3d9bc7;
-    --loss: #bf4c36;
-    --neutral: #908a7e;
-
-    --observed: #f2efe8;
-    --predicted: #3d9bc7;
-    --simulated: #3d9bc7;
-    --counterfactual: #bf4c36;
-  }
-}
-
-:root[data-theme="dark"] {
-  color-scheme: dark;
-
-  --paper: #191817;
-  --surface: #211f1d;
-  --surface-sunk: #131211;
-  --ink: #f2efe8;
-  --ink-2: #b0aba0;
-  --ink-3: #837e74;
-  --rule: #33302c;
-  --rule-strong: #4c4842;
-
-  --accent: #3d9bc7;
-  --accent-ink: #101010;
-
-  --soft: #bf4c36;
-  --medium: #c08a00;
-  --hard: #3d9bc7;
-
-  --gain: #3d9bc7;
-  --loss: #bf4c36;
-  --neutral: #908a7e;
-
-  --observed: #f2efe8;
-  --predicted: #3d9bc7;
-  --simulated: #3d9bc7;
-  --counterfactual: #bf4c36;
 }
 
 *,
@@ -219,11 +193,14 @@ a { color: inherit; text-underline-offset: 0.2em; text-decoration-thickness: 1px
 }
 
 .control:hover { background: var(--surface-sunk); }
+
+/* Selected state is a lit border, not an inverted block. On a dark surface an inverted
+   control is a white rectangle, which outshouts the number it is there to select. */
 .control[aria-pressed="true"],
 .control[data-active="true"] {
-  background: var(--ink);
-  color: var(--paper);
-  border-color: var(--ink);
+  background: var(--surface-sunk);
+  color: var(--ink);
+  border-color: var(--accent);
 }
 
 .control:focus-visible,
@@ -306,3 +283,48 @@ tbody tr:last-child th, tbody tr:last-child td { border-bottom: 0; }
   .no-print { display: none; }
   body { background: #fff; color: #000; }
 }
+
+/* --- the call ------------------------------------------------------------- */
+
+.verdict {
+  font-family: var(--font-ui);
+  font-weight: 600;
+  font-size: clamp(3.4rem, 2rem + 6vw, 6.5rem);
+  line-height: 0.92;
+  letter-spacing: -0.045em;
+  margin: 0;
+}
+
+.verdict-lap {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  font-size: clamp(3.4rem, 2rem + 6vw, 6.5rem);
+  line-height: 0.92;
+  letter-spacing: -0.06em;
+  color: var(--accent);
+}
+
+.headline-num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: clamp(1.6rem, 1.1rem + 2vw, 2.6rem);
+  letter-spacing: -0.04em;
+  line-height: 1;
+}
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  border: 1px solid var(--rule);
+}
+
+.stat {
+  padding: 13px 16px;
+  border-right: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+}
+
+.stat:last-child { border-right: 0; }
+.stat > dt { margin-bottom: 6px; }
+.stat > dd { margin: 0; font-size: 15px; }

@@ -47,7 +47,7 @@ from ..sim.scenario import Scenario, observed_plans
 from ..sim.state import RaceState, build_state
 from ..strategy.candidates import fit_max_stint_share, is_physically_plausible
 from ..strategy.engine import recommend
-from ..strategy.explain import explain
+from ..strategy.explain import caution_option_value, explain
 
 log = logging.getLogger(__name__)
 
@@ -180,6 +180,74 @@ def race_payload(circuit: str) -> dict:
     )
 
 
+def pit_window(ranking) -> list[dict]:
+    """Best achievable delta for each possible *next stop lap*, over every candidate.
+
+    This is the graphic a strategist actually reads, and it falls out of the ranking for
+    free. Collapsing ~100 plans onto the one axis that is live right now -- when to box --
+    turns a table nobody can scan into a curve with a visible floor, and the width of that
+    floor is the pit window. A ranked list hides the window; it shows twelve rows that are
+    four laps and one compound choice wearing twelve different labels.
+    """
+    base = ranking.baseline.race_time_s
+    best: dict[int, dict] = {}
+    for e in ranking.evaluations:
+        if not e.scenario.plan:
+            continue
+        lap = e.scenario.plan[0].lap
+        delta = float((e.race_time_s - base).mean())
+        if lap not in best or delta < best[lap]["delta_s"]:
+            best[lap] = {
+                "lap": lap,
+                "delta_s": delta,
+                "label": e.label,
+                "n_stops": e.n_stops,
+                "compound": e.scenario.plan[0].compound,
+            }
+    return [best[k] for k in sorted(best)]
+
+
+def distinct_options(ranking) -> list[dict]:
+    """The best plan of each genuinely different *shape*, not each different label.
+
+    Measured on Hungary at lap 20: twelve exported candidates reduce to two decisions,
+    HARD or MEDIUM on the next set. Nobody chooses between "box lap 22" and "box lap 23";
+    they choose a shape and then a lap inside the window. Presenting near-duplicates as
+    separate options manufactures a precision the simulation explicitly says it does not
+    have -- four of those twelve were inside Monte Carlo noise of each other.
+    """
+    base = ranking.baseline.race_time_s
+
+    def row(e) -> dict:
+        d = e.race_time_s - base
+        return {
+            "n_stops": e.n_stops,
+            "next_compound": e.scenario.plan[0].compound if e.scenario.plan else "none",
+            "next_lap": e.scenario.plan[0].lap if e.scenario.plan else None,
+            "label": e.label,
+            "delta_s": float(d.mean()),
+            "delta_se_s": float(d.std(ddof=1) / np.sqrt(len(d))),
+            "p_faster": float((d < 0).mean()),
+            "is_baseline": e is ranking.baseline,
+        }
+
+    best: dict[tuple, dict] = {}
+    for e in ranking.evaluations:
+        shape = (e.n_stops, e.scenario.plan[0].compound if e.scenario.plan else "none")
+        candidate = row(e)
+        if shape not in best or candidate["delta_s"] < best[shape]["delta_s"]:
+            best[shape] = candidate
+
+    # The plan that was actually run is always its own row, even when a better plan of the
+    # same shape displaces it. Grouping absorbed it -- at Hungary lap 20 the executed
+    # two-stop lost its slot to a two-stop two laps later -- and a comparison that hides
+    # what the team did is not a comparison.
+    if not any(r["is_baseline"] for r in best.values()):
+        best[("baseline",)] = row(ranking.baseline)
+
+    return sorted(best.values(), key=lambda r: r["delta_s"])
+
+
 def _state_payload(state: RaceState, ego: str) -> dict:
     driver = state.by_code[ego]
     return {
@@ -235,6 +303,35 @@ def decision_payload(
     payload["candidates_evaluated"] = len(ranking.evaluations)
     payload["candidates_shown"] = min(EXPORTED_CANDIDATES, len(ranking.evaluations))
     payload["indistinguishable_from_best"] = ranking.indistinguishable_from_best()["label"].tolist()
+
+    payload["window"] = pit_window(ranking)
+    payload["options"] = distinct_options(ranking)
+
+    if ranking.best is not ranking.baseline:
+        # What a safety car would do to the call. Exogenous by design (Challenge 3): this
+        # is a contrast under an assumption the caller supplies, never a prediction, and it
+        # leans on the two thinnest constants in the project. It is here because it is the
+        # first thing a strategist asks about any plan, and answering "we do not model
+        # that" while the number is computable would be a different kind of dishonesty.
+        horizon = frozenset(range(state.lap + 1, min(state.lap + 11, state.total_laps + 1)))
+        payload["caution"] = {
+            "laps": sorted(horizon),
+            "option_value_s": round(
+                caution_option_value(
+                    state,
+                    ego,
+                    ranking.best.scenario,
+                    ranking.baseline.scenario,
+                    components,
+                    horizon,
+                    rival_plans=plans,
+                    n_sims=1000,
+                ),
+                3,
+            ),
+        }
+    else:
+        payload["caution"] = None
 
     if ranking.best is not ranking.baseline:
         why = explain(

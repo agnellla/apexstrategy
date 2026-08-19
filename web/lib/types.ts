@@ -81,6 +81,27 @@ export interface Explanation {
   }[];
 }
 
+/** Best achievable outcome if you box on this lap. The curve, not the ranking. */
+export interface WindowPoint {
+  lap: number;
+  delta_s: number;
+  label: string;
+  n_stops: number;
+  compound: Compound;
+}
+
+/** One genuinely different shape of plan, rather than one more label for the same shape. */
+export interface StrategyOption {
+  n_stops: number;
+  next_compound: Compound | "none";
+  next_lap: number | null;
+  label: string;
+  delta_s: number;
+  delta_se_s: number;
+  p_faster: number;
+  is_baseline: boolean;
+}
+
 export interface Decision {
   ego: string;
   from_lap: number;
@@ -100,6 +121,11 @@ export interface Decision {
   /** False when the executed plan runs a stint past anything observed for its compound,
    *  which makes every delta measured against it an extrapolation. */
   baseline_in_support: boolean;
+  window: WindowPoint[];
+  options: StrategyOption[];
+  /** What a caution over the next ten laps would do to the call. An assumption, never a
+   *  prediction (Challenge 3). Null when the engine agrees with the executed plan. */
+  caution: { laps: number[]; option_value_s: number } | null;
   explanation: Explanation | null;
   wall_time_s: number;
 }

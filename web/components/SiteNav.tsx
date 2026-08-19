@@ -4,9 +4,10 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const PAGES = [
-  { href: "/", label: "Race" },
-  { href: "/simulator/", label: "Simulator" },
-  { href: "/decision/", label: "Decision" },
+  { href: "/", label: "The call" },
+  { href: "/race/", label: "Race" },
+  { href: "/simulator/", label: "All plans" },
+  { href: "/decision/", label: "Why" },
   { href: "/method/", label: "Method" },
 ];
 

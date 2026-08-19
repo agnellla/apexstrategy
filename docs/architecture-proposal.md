@@ -1631,9 +1631,93 @@ document nobody reads at the point of use:
   caution pit multiplier (**assumed, never fitted**, because the store contains no
   green-flag-to-caution stop pairs).
 
-### Phase 11 — next
+### Phase 11 — next (superseded, see below)
 
 Streamlit, three pages, provenance colouring (Part 10). The rule that matters is that the
 UI never computes: pages call `strategy.evaluate` / `strategy.explain` and render, so the
 core stays testable and headless. Everything those return is already JSON-serialisable
 (D9), which is also what the Next.js showcase will consume.
+
+
+### Phase 11 — complete (2026-08-19). **MVP ships, and the first version was the wrong product.**
+
+Precomputed scenario grid plus a Next.js showcase on Vercel (D9). Streamlit is **dropped,
+not deferred**: D9 gave it the internal-diagnostics job and the Phase 7-10 CLIs already do
+that job with richer output, so building it would have been duplicate surface for no new
+information.
+
+#### The redesign, and why it was needed
+
+The first build was a methodology showcase: stint timeline, a twelve-row ranked table, a
+decomposition waterfall, a data-quality panel, a method page. Everything on it was true and
+almost none of it was *useful*, because it showed the engine rather than the decision. It
+was the analyst's view shipped to a strategist.
+
+The test that settled it: at Hungary lap 20 the twelve exported candidates reduce to
+**two** genuinely different decisions, HARD or MEDIUM on the next set, spread across four
+adjacent laps, and four of the twelve were inside Monte Carlo noise of each other. A ranked
+list presents that as an ordering. It is not one.
+
+Rebuilt around the question actually being asked on the lap:
+
+| Panel | What it answers |
+|---|---|
+| **BOX L22**, window 21-23 | the call, and how long it stays open |
+| Worth / confidence / cost of waiting | is it worth it, is it settled, what does delay cost |
+| **The window curve** | the whole candidate set collapsed onto the live axis |
+| Four shapes, not twelve labels | the choices that are actually different |
+| Safety-car exposure | the first thing anyone asks about a plan |
+| "Behind the number" (collapsed) | the machinery, available and out of the way |
+
+The window curve is the graphic that did the most work and it came free from the existing
+ranking: group every evaluated plan by its *next stop lap* and take the best. At Hungary
+lap 20 that is a floor at laps 21-23 and a cliff after 25, rising to +5.9 s by lap 33. The
+width of the floor is the window; the slope past it is what waiting costs. A ranked table
+hides both.
+
+Two things were added to the export to support it, both computable from work already done:
+the window curve, and the safety-car contrast (`caution_option_value`, +0.22 s at that
+state, so the call does not change). The SC panel ships with its caveats attached, because
+it leans on the two thinnest constants in the project.
+
+#### What it still cannot tell her, said on the page
+
+There is no overtaking model (D5), so nothing here knows about track position. It will say
+a stop is worth a second and it cannot say whether the car comes out ahead of the one it is
+racing. On a circuit where that is the whole question, the tool is silent by construction.
+The method page now leads with this rather than burying it.
+
+#### Design
+
+Dark instrument surface, committed to rather than switched on `prefers-color-scheme`: this
+imitates a pit wall screen, and rendering it as a cream document on half the machines that
+open it would be two identities rather than one. No glow, glass, gradient, shadow or
+motion; what makes a timing screen read as advanced is density and figures that do not
+shift width as they tick.
+
+Chart colour is validated with the runnable checker rather than chosen by eye. The first
+attempt failed hard: the muted earth palette put the blue below the chroma floor and
+collapsed the moss/rust pair to CVD delta-E 3.5. The shipped compound hues clear every gate
+in both themes. The light-theme amber lands at 2.7:1 on paper, below 3:1, so it ships under
+the relief rule with visible labels and a table view on every chart.
+
+Three encoding mistakes were caught only by rendering the page and looking at it:
+
+1. Fading a stint that ran to the flag produced a 55% amber and a 55% blue that read as two
+   more compounds. Hatching it at 15px bar height produced a tint that read the same way.
+   Both were spending the encoding on information the reader already has, since the last
+   stint of anyone who finished ran to the flag by definition. The bars now carry no
+   modifier and the palette stays three colours meaning three compounds.
+2. The stint gap went from 2px to 4px: Hamilton and Perez each ran two consecutive stints on
+   the same compound, and at 2px the stop was invisible.
+3. Grouping candidates by shape silently absorbed the plan that was actually executed, so
+   the comparison hid what the team did. The baseline is now always its own row.
+
+Plus one that was invisible until measured: the font variables were declared on `<body>`
+while `globals.css` composes them at `:root`, so every `font-family` resolved to nothing
+and the entire site rendered in Times.
+
+### Phase 12 — next
+
+The Hungary 2024 post-race audit (D4): the McLaren undercut-and-swap-back as a narrative
+walk-through of the same decision surface, lap by lap.
