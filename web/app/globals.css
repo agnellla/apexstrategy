@@ -1,0 +1,308 @@
+/*
+  ApexStrategy showcase, design tokens.
+
+  Register: an engineering report, not a product landing page. The project's whole
+  character is measured claims and stated limitations, so the surface it ships on is
+  paper and ink with hairline rules, tabular figures, and square corners. Nothing here
+  glows, floats, or animates on hover.
+
+  Chart colour is validated, not chosen by eye. The three compound hues clear the
+  lightness band, chroma floor, all-pairs CVD separation and normal-vision floor in both
+  modes. The light amber sits at 2.7:1 against paper, below the 3:1 line, so it ships
+  under the relief rule: every compound mark carries a visible text label and every chart
+  has a table view.
+*/
+
+:root {
+  color-scheme: light;
+
+  --paper: #f4f1ea;
+  --surface: #fbfaf6;
+  --surface-sunk: #ebe7dd;
+  --ink: #171614;
+  --ink-2: #55524b;
+  --ink-3: #807c72;
+  --rule: #d9d3c7;
+  --rule-strong: #b7ae9e;
+
+  --accent: #00658f;
+  --accent-ink: #ffffff;
+
+  /* Tyre compounds. Validated as a categorical set against --paper. */
+  --soft: #a32b1e;
+  --medium: #c4881c;
+  --hard: #00658f;
+
+  /* Diverging, for the decomposition waterfall: time gained against time lost.
+     Same two poles as the categorical set, reused deliberately so the palette stays
+     small; no chart mixes compounds and decomposition terms. */
+  --gain: #00658f;
+  --loss: #a32b1e;
+  --neutral: #6f6a60;
+
+  /* Provenance. Part 10 makes this a hard requirement: the difference between an honest
+     tool and a misleading one is whether a projection can be mistaken for a measurement.
+     Class is carried by treatment first (solid, band, dash, fan) and hue second. */
+  --observed: #171614;
+  --predicted: #00658f;
+  --simulated: #00658f;
+  --counterfactual: #a32b1e;
+
+  --font-display: var(--font-newsreader), Georgia, "Times New Roman", serif;
+  --font-ui: var(--font-plex-sans), system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, monospace;
+
+  --measure: 68ch;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --paper: #191817;
+    --surface: #211f1d;
+    --surface-sunk: #131211;
+    --ink: #f2efe8;
+    --ink-2: #b0aba0;
+    --ink-3: #837e74;
+    --rule: #33302c;
+    --rule-strong: #4c4842;
+
+    --accent: #3d9bc7;
+    --accent-ink: #101010;
+
+    --soft: #bf4c36;
+    --medium: #c08a00;
+    --hard: #3d9bc7;
+
+    --gain: #3d9bc7;
+    --loss: #bf4c36;
+    --neutral: #908a7e;
+
+    --observed: #f2efe8;
+    --predicted: #3d9bc7;
+    --simulated: #3d9bc7;
+    --counterfactual: #bf4c36;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --paper: #191817;
+  --surface: #211f1d;
+  --surface-sunk: #131211;
+  --ink: #f2efe8;
+  --ink-2: #b0aba0;
+  --ink-3: #837e74;
+  --rule: #33302c;
+  --rule-strong: #4c4842;
+
+  --accent: #3d9bc7;
+  --accent-ink: #101010;
+
+  --soft: #bf4c36;
+  --medium: #c08a00;
+  --hard: #3d9bc7;
+
+  --gain: #3d9bc7;
+  --loss: #bf4c36;
+  --neutral: #908a7e;
+
+  --observed: #f2efe8;
+  --predicted: #3d9bc7;
+  --simulated: #3d9bc7;
+  --counterfactual: #bf4c36;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  /* Square by decision. Rounded corners are the default look of software that was not
+     designed, and this project is about not defaulting. */
+  border-radius: 0;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  line-height: 1.55;
+  font-feature-settings: "kern", "liga";
+}
+
+h1, h2, h3, h4 {
+  font-family: var(--font-display);
+  font-weight: 500;
+  letter-spacing: -0.012em;
+  margin: 0;
+  text-wrap: balance;
+}
+
+h1 { font-size: clamp(2rem, 1.4rem + 2.4vw, 3.25rem); line-height: 1.08; }
+h2 { font-size: clamp(1.35rem, 1.1rem + 1vw, 1.85rem); line-height: 1.18; }
+h3 { font-size: 1.075rem; line-height: 1.3; font-weight: 600; }
+
+p { margin: 0 0 1em; max-width: var(--measure); }
+a { color: inherit; text-underline-offset: 0.2em; text-decoration-thickness: 1px; }
+
+/* No transitions anywhere. Hover changes state instantly, the way a control panel does. */
+* { transition: none !important; }
+
+/* --- numerals -------------------------------------------------------------- */
+
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1, "zero" 1;
+  letter-spacing: -0.02em;
+}
+
+/* --- layout ---------------------------------------------------------------- */
+
+.shell {
+  max-width: 1220px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+.rule { border: 0; border-top: 1px solid var(--rule); margin: 0; }
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+}
+
+.panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.panel-body { padding: 18px; }
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.note {
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--ink-2);
+  max-width: var(--measure);
+}
+
+/* --- controls -------------------------------------------------------------- */
+
+.control {
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--rule-strong);
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.control:hover { background: var(--surface-sunk); }
+.control[aria-pressed="true"],
+.control[data-active="true"] {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+}
+
+.control:focus-visible,
+a:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.segmented { display: flex; flex-wrap: wrap; gap: -1px; }
+.segmented > .control { margin-right: -1px; }
+
+/* --- tables ---------------------------------------------------------------- */
+
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+
+th {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  font-weight: 500;
+  text-align: right;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--rule-strong);
+  white-space: nowrap;
+}
+
+th:first-child, td:first-child { text-align: left; }
+td { padding: 8px 10px; border-bottom: 1px solid var(--rule); text-align: right; }
+
+/* Row headers are labels, not column headings: they keep sentence case and the UI face.
+   Declared once so the last-row border rule below can actually reach them, which it
+   could not while every one of these carried its own inline border. */
+tbody th[scope="row"] {
+  text-align: left;
+  text-transform: none;
+  letter-spacing: 0;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--ink);
+  border-bottom: 1px solid var(--rule);
+}
+
+tbody th[scope="row"].mono { font-family: var(--font-mono); font-size: 12px; }
+tbody th[scope="row"].strong { font-weight: 600; }
+tbody tr:last-child th, tbody tr:last-child td { border-bottom: 0; }
+
+.table-scroll { overflow-x: auto; }
+
+/* --- skeletons ------------------------------------------------------------- */
+
+.skeleton {
+  background: var(--surface-sunk);
+  border: 1px solid var(--rule);
+  color: transparent;
+}
+
+.skeleton-line {
+  height: 1em;
+  background: var(--surface-sunk);
+  border-bottom: 1px solid var(--rule);
+}
+
+/* --- charts ---------------------------------------------------------------- */
+
+.chart { display: block; width: 100%; overflow: visible; }
+.axis-line { stroke: var(--rule-strong); stroke-width: 1; }
+.grid-line { stroke: var(--rule); stroke-width: 1; }
+.tick-text {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  fill: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+@media print {
+  .no-print { display: none; }
+  body { background: #fff; color: #000; }
+}

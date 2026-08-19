@@ -21,3 +21,10 @@ __pycache__/
 .DS_Store
 .vscode/
 .idea/
+
+# web
+web/node_modules/
+web/.next/
+web/out/
+web/next-env.d.ts
+web/.vercel

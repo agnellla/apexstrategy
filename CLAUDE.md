@@ -21,6 +21,8 @@ uv run python -m apexstrategy.evaluation.replay --circuits hungary --from-laps 2
 uv run python -m apexstrategy.evaluation.calibration        # Phase 8 coverage + PIT
 uv run python -m apexstrategy.strategy                       # Phase 9 recommendation, demo race
 uv run python -m apexstrategy.strategy --circuit austria --lap 30 --driver VER --explain
+uv run python -m apexstrategy.showcase          # Phase 11 scenario grid -> web/public/data
+cd web && npm run dev                           # the Next.js showcase (D9)
 ```
 
 Always `uv run` — there is no active venv on PATH.
@@ -129,8 +131,14 @@ Done: **0** (repo/env), **1** (ingest + contracts), **2+3** (gaps + dirty air),
 **4** (circuit constants), **5** (pace model), **6** (RaceState/Scenario + firewall),
 **7 (simulator + replay validation — the hard gate, PASSED)**, **8** (hierarchical MC +
 calibration), **9** (strategy engine: candidates, race-time ranking, risk),
-**10** (explanation decomposition, components reconciling to 1e-15s).
-Next: **11** (Streamlit: 3 pages, provenance colouring — MVP complete).
+**10** (explanation decomposition, components reconciling to 1e-15s),
+**11** (precomputed scenario grid + Next.js showcase — **MVP complete**).
+Next: **12** (Hungary 2024 post-race audit, the D4 narrative demo).
+
+**Streamlit was dropped, not deferred.** D9 gave it the internal-diagnostics job and the
+Phase 7–10 CLIs already do that job with richer output. Building it would have been
+duplicate surface for no new information. D9's *other* half, the Next.js showcase, is
+built and is where the UI/UX story lives.
 
 ### Invariants from Phases 4–10
 

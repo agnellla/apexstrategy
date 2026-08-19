@@ -1,0 +1,100 @@
+{
+  "schema": 1,
+  "demo_circuit": "hungary",
+  "decision_laps": [
+    10,
+    20,
+    30,
+    40
+  ],
+  "races": [
+    {
+      "circuit": "bahrain",
+      "season": 2024,
+      "round": 1,
+      "total_laps": 57,
+      "in_training_pool": true,
+      "n_decisions": 24,
+      "clean_yield": 0.63,
+      "size_kb": 146.0
+    },
+    {
+      "circuit": "suzuka",
+      "season": 2024,
+      "round": 4,
+      "total_laps": 53,
+      "in_training_pool": true,
+      "n_decisions": 24,
+      "clean_yield": 0.568,
+      "size_kb": 146.8
+    },
+    {
+      "circuit": "monaco",
+      "season": 2024,
+      "round": 8,
+      "total_laps": 78,
+      "in_training_pool": false,
+      "n_decisions": 0,
+      "clean_yield": 0.524,
+      "size_kb": 10.0
+    },
+    {
+      "circuit": "barcelona",
+      "season": 2024,
+      "round": 10,
+      "total_laps": 66,
+      "in_training_pool": true,
+      "n_decisions": 24,
+      "clean_yield": 0.659,
+      "size_kb": 157.0
+    },
+    {
+      "circuit": "austria",
+      "season": 2024,
+      "round": 11,
+      "total_laps": 71,
+      "in_training_pool": true,
+      "n_decisions": 24,
+      "clean_yield": 0.634,
+      "size_kb": 161.5
+    },
+    {
+      "circuit": "britain",
+      "season": 2024,
+      "round": 12,
+      "total_laps": 52,
+      "in_training_pool": false,
+      "n_decisions": 0,
+      "clean_yield": 0.41,
+      "size_kb": 15.1
+    },
+    {
+      "circuit": "hungary",
+      "season": 2024,
+      "round": 13,
+      "total_laps": 70,
+      "in_training_pool": true,
+      "n_decisions": 24,
+      "clean_yield": 0.655,
+      "size_kb": 158.3
+    }
+  ],
+  "provenance": {
+    "observed": {
+      "label": "Observed",
+      "meaning": "Measured. This actually happened."
+    },
+    "predicted": {
+      "label": "Predicted",
+      "meaning": "Model output for the state as known at the decision lap."
+    },
+    "simulated": {
+      "label": "Simulated",
+      "meaning": "Forward projection under an assumption, with its full distribution."
+    },
+    "counterfactual": {
+      "label": "Counterfactual",
+      "meaning": "A strategy nobody ran. Never validated against an outcome."
+    }
+  }
+}
