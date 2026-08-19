@@ -20,6 +20,8 @@ uv run python -m apexstrategy.models.train     # LORO model comparison, fit + pe
 uv run python -m apexstrategy.evaluation.replay              # Phase 7 gate, all circuits
 uv run python -m apexstrategy.evaluation.replay --circuits hungary --from-laps 25
 uv run python -m apexstrategy.evaluation.calibration        # Phase 8 coverage + PIT
+uv run python -m apexstrategy.evaluation.calibration_report # coverage on UNSEEN races/seasons
+uv run python -m apexstrategy.evaluation.validate           # learning curves, under/overfit
 uv run python -m apexstrategy.strategy                       # Phase 9 recommendation, demo race
 uv run python -m apexstrategy.strategy --circuit austria --lap 30 --driver VER --explain
 uv run python -m apexstrategy.showcase          # Phase 11 scenario grid -> web/public/data
@@ -179,6 +181,38 @@ problem: it is close to the irreducible noise in a single lap time.
 What the residuals *did* justify was one specific term (D18). MAE was the wrong thing to
 look at — the systematic bias was in tyre age, it curved, and a linear-in-age model cannot
 represent a curve.
+
+### Calibration on unseen seasons (D19) — the current headline
+
+**Held-out season, 80% intervals cover 0.792** against nominal 0.80 (was 0.53).
+50% covers 0.571, 95% covers 0.905. PIT sd 0.271 against a uniform 0.289, so widths are
+about right; PIT mean 0.584 says what is left is **point-estimate bias, not spread**.
+
+Two structural fixes did it, both found by measuring components that had been *frozen*:
+
+1. **The reference error has a floor.** It was modelled as pure sampling noise `k/√n`,
+   which goes to zero, so by lap 35 the simulator was certain it knew a driver's pace.
+   Measured over 190 states across 48 races and three seasons it is `√(floor² + k²/n)`
+   with floor **0.404 s** per car and **0.248 s** field-wide. The sampling term was right
+   all along (0.792 measured vs 0.780 assumed); the floor was simply absent.
+2. **A race is 30% noisier or quieter than average, and you cannot know which.** Per-race
+   residual sd runs 0.431–2.233 s around a pooled 0.773 s. Correlation with the same
+   circuit in other seasons is **0.04**, and conditioning on it makes things worse, so it
+   is sampled once per simulation rather than predicted (`race_scale_log_sd`, fitted).
+
+**Two further race-level effects were measured and deliberately not added.** A shared
+stint-level offset (0.2345 s) is the same thing as the shared reference floor (0.248 s)
+seen from the other side — adding it would be the third instance of the Phase 8
+double-count. A shared degradation shift (0.030 s/lap) is real, but tyre age is centred
+within a stint so a slope shift sums to zero over it: it moves *when* to pit, not race
+time, and cannot improve the criterion being measured.
+
+**The pooled number is again partly two errors cancelling** — this keeps happening and
+should always be checked. By circuit on the held-out season: Barcelona 0.427 and Bahrain
+0.675 (both badly biased optimistic), against Suzuka 0.962 and Austria 0.969
+(over-covered). Barcelona 2025 ran soft degradation at **0.130 s/lap against 0.056 and
+0.063** in the two prior years — a genuine regime change the training data does not
+contain. **Do not widen intervals to cover it**; that would hide an informative failure.
 
 ### The out-of-season result, read this before quoting any accuracy number
 

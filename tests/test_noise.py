@@ -33,10 +33,24 @@ def _schedule(from_lap: int = 10, to_lap: int = 40, pit_lap: int = 25) -> pd.Dat
 
 
 def _noise(**kw) -> NoiseModel:
+    """A model with one component live at a time, for the isolation tests below.
+
+    ``race_scale_log_sd`` is off by default here and nowhere else. It is a *multiplier* on
+    every within-race effect, so leaving it on would leak into each isolation and, worse,
+    would correlate effects the isolation tests are checking are independent -- which is
+    exactly what the race scale is supposed to do in production. ``TestRaceScale`` turns it
+    on deliberately.
+    """
     defaults = {
         "lap_residuals": np.array([-0.5, -0.2, 0.0, 0.2, 0.9]),
         "stint_level_sd": 0.4,
         "stint_slope_sd": 0.05,
+        "race_scale_log_sd": 0.0,
+        # Floors off too, for the same reason: an isolation test that sets reference_k=0
+        # is asking for "no per-car reference error", and a floor left standing quietly
+        # keeps the term alive and breaks the isolation.
+        "reference_floor": 0.0,
+        "reference_shared_floor": 0.0,
     }
     return NoiseModel(**{**defaults, **kw})
 
@@ -249,3 +263,83 @@ class TestFit:
         ]
         with pytest.raises(ValueError, match="no stint long enough"):
             NoiseModel.fit(pd.DataFrame(rows), Zero())
+
+
+class TestRaceScale:
+    """One afternoon's worth of chaos, drawn once and applied to everyone.
+
+    Measured out of fold across 48 races, per-race residual spread runs 0.431 s to 2.233 s
+    around a pooled 0.773 s. Regressing a race's spread on the same circuit's spread in
+    other seasons correlates at 0.04, so it cannot be predicted and has to be integrated
+    over instead.
+    """
+
+    def test_a_noisy_race_is_noisy_for_everyone_at_once(self) -> None:
+        """The scale is shared, so it must correlate drivers who share nothing else."""
+        model = _noise(stint_level_sd=0.0, stint_slope_sd=0.0, race_scale_log_sd=0.5)
+        draws = _sample(model, n_sims=800)
+        spread_a = np.abs(draws[:, 0, :]).mean(axis=1)
+        spread_b = np.abs(draws[:, 1, :]).mean(axis=1)
+        assert np.corrcoef(spread_a, spread_b)[0, 1] > 0.4
+
+    def test_it_widens_the_distribution_without_moving_the_centre(self) -> None:
+        """A multiplier on mean-zero noise adds spread and no bias, which is the whole
+        point: it must not quietly make projections slower."""
+        flat = _sample(_noise(race_scale_log_sd=0.0), n_sims=1500)
+        scaled = _sample(_noise(race_scale_log_sd=0.45), n_sims=1500)
+        assert scaled.std() > flat.std() * 1.05
+        assert abs(scaled.mean() - flat.mean()) < 0.05
+
+    def test_it_is_fitted_from_data_not_assumed(self) -> None:
+        """Two synthetic races with deliberately different spreads must produce a non-zero
+        scale, and identical ones must not invent variance that is not there."""
+        rng = np.random.default_rng(0)
+        rows = []
+        for race, sd in [("a", 0.3), ("b", 1.2), ("c", 0.5), ("d", 0.9)]:
+            for driver in range(6):
+                for lap in range(1, 61):
+                    rows.append(
+                        {
+                            "race_id": race,
+                            "driver": f"D{driver}",
+                            "stint_number": 1 + lap // 25,
+                            "tyre_age": float(lap % 25 + 1),
+                            "resid": rng.normal(0, sd),
+                        }
+                    )
+        frame = pd.DataFrame(rows)
+        per_race = frame.groupby("race_id")["resid"].std()
+        spread = float(np.std(np.log(per_race / frame["resid"].std())))
+        assert spread > 0.3, "four races spanning 0.3s to 1.2s must show a real scale"
+
+
+class TestReferenceFloor:
+    """The reference error stops shrinking, and missing that was the calibration bug.
+
+    Built with the shipped defaults rather than the isolation harness, because the floors
+    are the thing under test here.
+    """
+
+    @staticmethod
+    def _shipped() -> NoiseModel:
+        return NoiseModel(
+            lap_residuals=np.array([-0.5, 0.0, 0.5]),
+            stint_level_sd=0.4,
+            stint_slope_sd=0.05,
+        )
+
+    def test_uncertainty_does_not_fall_to_zero_with_unlimited_laps(self) -> None:
+        model = self._shipped()
+        assert model.reference_sd(10_000) == pytest.approx(model.reference_floor, abs=0.01)
+        assert model.reference_sd(10_000) > 0.3
+
+    def test_it_still_narrows_over_the_range_that_matters(self) -> None:
+        model = self._shipped()
+        assert model.reference_sd(2) > model.reference_sd(10) > model.reference_sd(30)
+
+    def test_the_shared_term_has_its_own_floor_and_stays_capped(self) -> None:
+        model = self._shipped()
+        assert model.reference_shared_sd(10_000) == pytest.approx(
+            model.reference_shared_floor, abs=0.01
+        )
+        assert model.reference_shared_sd(1) <= MAX_REFERENCE_SHARED_SD

@@ -97,15 +97,38 @@ import pandas as pd
 #: this the slope is noise, and the stint's laps only inform the lap-level component.
 MIN_LAPS_FOR_STINT_FIT = 8
 
+#: A race needs this many clean laps before its residual spread is an estimate rather than
+#: an accident, and this many races before the spread *of* those spreads means anything.
+MIN_LAPS_FOR_RACE_SCALE = 200
+MIN_RACES_FOR_RACE_SCALE = 8
+
 #: Race-level sd of the D13 race-progress correction error, in s/lap. Measured across the
 #: five trainable circuits at decision laps 5-35. See the module docstring on why it is a
 #: constant and why it is the thinnest number here.
 DEFAULT_PROGRESS_SD = 0.018
 
-#: Reference-pace sampling scales, fitted against the whole-race reference as truth over
-#: five circuits x seven decision laps. The per-car term is estimated on ~680 driver
-#: states; the shared term on 35 (circuit, lap) cells and is correspondingly thinner.
-DEFAULT_REFERENCE_K = 0.780
+#: Reference-pace error has a **floor**, and missing it was the calibration bug.
+#:
+#: The first version modelled the error as pure sampling noise, ``k / sqrt(n)``, which goes
+#: to zero as laps accumulate: by lap 35 the simulator was certain it knew a driver's pace.
+#: Re-measured over 190 (race, decision lap) states spanning 48 races, 24 circuits and
+#: three seasons, the error is ``sqrt(floor^2 + k^2/n)`` with a floor that never shrinks:
+#:
+#: | Decision lap | private sd | shared sd |
+#: |---|---|---|
+#: | 15 | 0.561 | 0.427 |
+#: | 25 | 0.503 | 0.353 |
+#: | 35 | 0.423 | 0.296 |
+#:
+#: The sampling term was close to right all along (0.792 measured against 0.780 assumed).
+#: What was missing is the part that does not average away: a driver's pace in the second
+#: half of a race is genuinely not the pace they showed in the first, and no amount of
+#: watching the first half fixes that. D14 argued this misfit cancels between the reference
+#: estimate and the future residuals, and it does -- but only to the extent it is constant,
+#: and the residue is this floor.
+DEFAULT_REFERENCE_FLOOR = 0.404
+DEFAULT_REFERENCE_SHARED_FLOOR = 0.248
+DEFAULT_REFERENCE_K = 0.792
 #: Measured raw, the field-wide reference error gives k = 4.430 -- but it correlates at
 #: **0.824** with the race-progress error, sharing 68% of its variance, because they are
 #: largely the same phenomenon seen twice: when D13's slope is wrong by d, the reference
@@ -113,8 +136,40 @@ DEFAULT_REFERENCE_K = 0.780
 #: of half the decision lap). Applying both at full size counted the race-level error
 #: nearly twice and made the between-replay spread 1.43x too wide. This is the component
 #: orthogonal to the progress term.
-DEFAULT_REFERENCE_SHARED_K = 2.314
+DEFAULT_REFERENCE_SHARED_K = 3.235
 
+#: How much a whole race's lap-to-lap noise scales up or down, as the sd of the log ratio
+#: between one race's residual sd and the pooled sd. Measured out of fold over 48 races:
+#: per-race sd spans 0.431 s to 2.233 s around a pooled 0.773 s, so a race is routinely
+#: **30% noisier or quieter than average** and occasionally three times noisier.
+#:
+#: Sampled rather than predicted, because it is not predictable. Regressing a race's spread
+#: on the same circuit's spread in other seasons gives a correlation of **0.04**, and
+#: conditioning on it makes the residual scatter *worse* (log-sd 0.313 against 0.262
+#: unconditional). Chaos is a property of the afternoon, not of the venue. A simulator that
+#: uses one pooled spread for every race is therefore over-confident at Melbourne and
+#: over-cautious at Barcelona, with no way to tell which in advance; drawing the scale once
+#: per simulation integrates over exactly that ignorance.
+DEFAULT_RACE_SCALE_LOG_SD = 0.262
+
+#: Two further race-level effects were measured and deliberately **not** added.
+#:
+#: **A shared stint-level offset.** Per-race mean stint-level error has sd 0.2345 s beyond
+#: what independent sampling explains, which over a 45-lap projection is 10.6 s of race
+#: time. It is not added because it is the same effect as ``reference_shared_floor``
+#: (0.248 s) seen from the other side: both say "this race is systematically off for
+#: everyone". Adding it would be the third instance of the double-count Phase 8 found
+#: twice, and the near-equality of the two independent measurements is the evidence.
+#:
+#: **A shared degradation shift.** Per-race mean stint-slope error has sd 0.0301 s/lap
+#: beyond sampling, and it is real -- Barcelona 2025 ran soft degradation at 0.130 s/lap
+#: against 0.056 and 0.063 in the two prior years. It is not added either, for a different
+#: reason: tyre age is centred within each stint, so a slope shift sums to zero over a
+#: stint and moves *when* to pit without moving race time for a fixed plan. It therefore
+#: cannot improve race-time calibration, which is the criterion, and would be complexity
+#: bought with nothing measurable. It belongs to a pit-timing uncertainty the strategy
+#: layer would need, not to this one.
+#:
 #: Ceiling on the field-wide reference sd. ``k / sqrt(N)`` over-predicts at very early
 #: decision laps (1.65 s fitted against 1.04 s measured at lap 5) because with a handful of
 #: field laps the square-root law extrapolates past anything observed. Beyond ~1 s the
@@ -137,10 +192,15 @@ class NoiseModel:
     stint_slope_sd: float
     #: Per-car reference sampling sd is ``reference_k / sqrt(that driver's clean laps)``.
     reference_k: float = DEFAULT_REFERENCE_K
+    #: Irreducible part of the per-car reference error. See the module constants.
+    reference_floor: float = DEFAULT_REFERENCE_FLOOR
     #: Field-wide reference sd is ``reference_shared_k / sqrt(the field's clean laps)``.
     #: Drawn once per simulation and applied to everyone, because it is the model's pace
     #: shape being wrong for this circuit rather than any one car being misjudged.
     reference_shared_k: float = DEFAULT_REFERENCE_SHARED_K
+    reference_shared_floor: float = DEFAULT_REFERENCE_SHARED_FLOOR
+    #: Race-level multiplier on lap and stint noise, drawn once per simulation.
+    race_scale_log_sd: float = DEFAULT_RACE_SCALE_LOG_SD
     progress_sd: float = DEFAULT_PROGRESS_SD
     #: Whether the stint already running at lap L has its level treated as observed.
     #: It should be: the reference-pace estimate was built from that stint's laps, so it
@@ -181,21 +241,38 @@ class NoiseModel:
         if not levels:
             raise ValueError("no stint long enough to fit variance components")
 
+        # Race-level scale, fitted rather than assumed: how much each race's residual
+        # spread departs from the pooled one. Races with too few clean laps to estimate a
+        # spread from are dropped rather than counted as quiet ones.
+        per_race = clean.groupby("race_id")["resid"].agg(["std", "size"])
+        per_race = per_race[per_race["size"] >= MIN_LAPS_FOR_RACE_SCALE]
+        pooled = float(clean["resid"].std())
+        scale_log_sd = (
+            float(np.std(np.log(per_race["std"] / pooled)))
+            if len(per_race) >= MIN_RACES_FOR_RACE_SCALE and pooled > 0
+            else DEFAULT_RACE_SCALE_LOG_SD
+        )
+
         return cls(
             lap_residuals=np.asarray(lap_resid),
             stint_level_sd=float(np.std(levels)),
             stint_slope_sd=float(np.std(slopes)),
+            race_scale_log_sd=scale_log_sd,
         )
 
     def reference_sd(self, clean_laps_observed: int) -> float:
-        """Per-car reference sampling sd, given how much clean running that car has done."""
-        return self.reference_k / np.sqrt(max(clean_laps_observed, 1))
+        """Per-car reference error: a sampling term that shrinks, plus a floor that does not."""
+        n = max(clean_laps_observed, 1)
+        return float(np.hypot(self.reference_floor, self.reference_k / np.sqrt(n)))
 
     def reference_shared_sd(self, field_clean_laps: int) -> float:
-        """Field-wide reference sd, given how much clean running the whole field has done."""
-        return min(
-            self.reference_shared_k / np.sqrt(max(field_clean_laps, 1)),
-            MAX_REFERENCE_SHARED_SD,
+        """Field-wide reference error, same shape: sampling plus an irreducible floor."""
+        n = max(field_clean_laps, 1)
+        return float(
+            min(
+                np.hypot(self.reference_shared_floor, self.reference_shared_k / np.sqrt(n)),
+                MAX_REFERENCE_SHARED_SD,
+            )
         )
 
     def sample(
@@ -246,6 +323,12 @@ class NoiseModel:
                 if m.any():
                     age_centred[i, m] = age[i, m] - age[i, m].mean()
 
+        # 0. Race level: how noisy *this* afternoon turns out to be. Drawn once per
+        # simulation and applied to every lap and stint effect below, because a chaotic race
+        # is chaotic for everyone at once. Lognormal so the multiplier stays positive and
+        # the noisy tail is longer than the quiet one, which is what the data looks like.
+        race_scale = np.exp(rng.normal(0.0, self.race_scale_log_sd, size=(n_sims, 1, 1)))
+
         # 1. Race level: one track trend per simulation, shared by the whole field.
         progress = rng.normal(0.0, self.progress_sd, size=(n_sims, 1, 1))
         elapsed = (laps - from_lap)[None, None, :]
@@ -276,10 +359,12 @@ class NoiseModel:
         # 5. Lap level: i.i.d., bootstrapped so the slow tail survives.
         lap_noise = rng.choice(self.lap_residuals, size=grid, replace=True)
 
-        return (
-            progress * elapsed
-            + reference
-            + level[:, d_idx, stint_idx]
+        # The reference terms are already race-level quantities measured as such, so the
+        # race scale multiplies only the within-race effects. Multiplying both would count
+        # the same afternoon twice, which is the double-count Phase 8 warns about.
+        within_race = (
+            level[:, d_idx, stint_idx]
             + slope[:, d_idx, stint_idx] * age_centred[None, :, :]
             + lap_noise
         )
+        return progress * elapsed + reference + race_scale * within_race
