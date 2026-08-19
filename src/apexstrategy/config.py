@@ -39,6 +39,18 @@ SEED = 20240804  # Hungarian GP 2024, the demo race (D4)
 SEASON = 2024
 SESSION = "R"
 
+#: The season models are fitted on. Everything model-facing filters to this, structurally
+#: rather than by convention, so that adding a season to the store cannot silently turn an
+#: out-of-sample test into an in-sample one. That is the same leakage discipline the
+#: temporal firewall applies within a race, applied across seasons.
+TRAINING_SEASON = 2024
+
+#: Seasons held out entirely. Never fitted on, only predicted. A model validated by
+#: leave-one-race-out inside one season has still only been asked to generalise across
+#: circuits; a held-out season asks it to generalise across cars, tyres and regulations,
+#: which is the question anyone deploying it would actually ask.
+HOLDOUT_SEASONS: tuple[int, ...] = (2025,)
+
 #: Telemetry is not ingested (D7). ``car_data`` and ``position_data`` were 337 MB
 #: of a 432 MB four-race cache; lap-level essentials are ~1.2 MB/race. Strategy
 #: modelling operates at lap granularity, so telemetry buys nothing for the MVP.

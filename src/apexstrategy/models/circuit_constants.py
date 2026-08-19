@@ -210,7 +210,7 @@ def build_circuit_constants() -> pd.DataFrame:
     flagged ``use_for_training=False`` (D3). Non-dry races are excluded from the pooled
     fit on the same basis, via ``dry_circuits``.
     """
-    laps = store.read_table("laps")
+    laps = store.fittable_laps()
     pits = store.read_table("pits")
     clean = laps[laps["is_clean"]]
 

@@ -111,7 +111,7 @@ def _lap_category(laps: pd.DataFrame) -> pd.Series:
 
 def loro_pace_model(circuit: str):
     """Fit the selected pace model on every trainable circuit except ``circuit``."""
-    laps = store.read_table("laps")
+    laps = store.fittable_laps()
     allowed = {c.key for c in config.TRAINING_CIRCUITS} - {circuit}
     laps = laps[laps["circuit"].isin(allowed)]
     laps = add_reference_pace(laps)

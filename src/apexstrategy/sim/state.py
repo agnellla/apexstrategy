@@ -422,8 +422,22 @@ def build_state(
         raise ValueError(f"nobody completed lap {lap}; the race may have been shorter")
 
     leader_time_s = float(on_lap["cumulative_time_s"].min())
+
+    # A green-flag scale for "how long is a lap here". This is the last-resort reference
+    # pace, the yardstick for retirement detection, and the per-lap penalty applied to
+    # lapped cars, so a caution-contaminated value is wrong three ways at once.
+    #
+    # It used to be the plain median of recent laps and the 2025 holdout found it: Austria
+    # 2025 ran laps 1-3 behind a safety car, so a state built at lap 5 handed every driver
+    # a reference of 86.0 s against a true green pace near 71 s, and the race-time
+    # projection came out 21.5% off. 2024 never triggered it because its cautions all fell
+    # late or on a red-flagged opening lap.
+    from ..data.clean import is_under_caution
+
     recent = observed[observed["lap_number"] > max(1, lap - 5)]
-    leader_lap_time_s = float(recent["lap_time_s"].median())
+    green_recent = recent[~is_under_caution(recent["track_status"])]
+    usable = green_recent if green_recent["lap_time_s"].notna().any() else recent
+    leader_lap_time_s = float(usable["lap_time_s"].median())
 
     if race_progress_adjustment is not None:
         progress_adjustment = race_progress_adjustment

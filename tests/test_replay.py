@@ -155,7 +155,10 @@ class TestStateAgainstRealData:
         """
         laps = store.race_laps(GATE_CIRCUIT)
         pits = store.read_table("pits")
-        pits = pits[pits["circuit"] == GATE_CIRCUIT]
+        # Season-scoped: ``circuit`` alone stopped identifying a race once a held-out
+        # season entered the store, and an unscoped filter here silently compared 2024 lap
+        # flags against two seasons of stops.
+        pits = pits[(pits["circuit"] == GATE_CIRCUIT) & (pits["season"] == config.SEASON)]
         plans = observed_plans(laps)
 
         for driver, expected in pits.groupby("driver")["lap"].apply(sorted).items():

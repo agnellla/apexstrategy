@@ -95,7 +95,9 @@ def fit_max_stint_share(exclude_circuit: str | None = None) -> dict[str, float]:
     from .. import config
 
     stints = store.read_table("stints")
+    stints = stints[stints["season"] == config.TRAINING_SEASON]
     results = store.read_table("results")
+    results = results[results["season"] == config.TRAINING_SEASON]
     allowed = {c.key for c in config.TRAINING_CIRCUITS} - {exclude_circuit}
 
     total_laps = results.groupby("circuit")["total_laps"].max()

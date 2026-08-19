@@ -13,7 +13,8 @@ uv sync --extra dev                            # env (Python 3.11, never system 
 uv run pytest                                  # all tests
 uv run pytest -m "not slow"                    # offline only
 uv run ruff check --fix . && uv run ruff format .
-uv run python -m apexstrategy.data.build       # rebuild the Parquet store
+uv run python -m apexstrategy.data.build --seasons 2024 2025   # rebuild the store (BOTH seasons)
+uv run python -m apexstrategy.evaluation.season_holdout        # fit 2024, predict 2025
 uv run python -m apexstrategy.data.build --circuits bahrain   # one race, for iteration
 uv run python -m apexstrategy.models.train     # LORO model comparison, fit + persist
 uv run python -m apexstrategy.evaluation.replay              # Phase 7 gate, all circuits
@@ -43,6 +44,7 @@ Always `uv run` — there is no active venv on PATH.
 | **D10** | **Silverstone 2024 excluded from fitting** — 24.3% wet-compound laps vs a 5% dry threshold. Contamination was measured, not assumed: its pit loss came out 35.3s vs 20–25s elsewhere. **Training pool is 5 circuits**, not 6. |
 | **D11** | **The linear pace baseline ships; LightGBM does not.** LORO MAE 0.556 vs 0.626, degradation error 0.0137 vs 0.0174 s/lap. With 5 circuits, the GBM learns circuit-specific structure that does not transfer. Do not re-adopt a boosted model without beating these numbers. |
 | **D12** | **Dirty-air laps stay excluded, not a covariate.** Tested fairly (fixed clean test set, only training data varied): +39% data does not improve clean-lap prediction. Columns remain in the store; revisit when product-Phase 2 needs a traffic penalty. |
+| **D15** | **2025 is a held-out season, never fitted on.** `config.TRAINING_SEASON = 2024`, `HOLDOUT_SEASONS = (2025,)`, enforced in `store.trainable_laps`/`fittable_laps` and asserted by `tests/test_season_gate.py`, not remembered at call sites. LORO within 2024 only asks the model to generalise across *circuits*; a held-out season asks it to generalise across cars, tyres and regulations, which is the question anyone deploying it would ask. **Result: 18/20 replays pass on 2024, 11/20 on 2025.** Do not report the 2024 number without the 2025 one. |
 | **D14** | **Driver-level uncertainty is reference *sampling* error, split shared/private.** A driver's persistent model misfit (sd 0.359s) cancels between the reference estimate and the future residuals, so it is not sampled at all. What remains is **mostly field-wide** — 76% of its variance at lap 5, 45% at lap 35 — and is drawn once per sim, not per driver: a shared error cannot change who beats whom, a private one can. Do not merge them back together. |
 | **D13** | **The race-progress residual is corrected in-race, with shrinkage.** The pace model has one pooled `lap_number` coefficient; true per-circuit rates span −0.027 to −0.096 s/lap, and under LORO that gap was the dominant replay error (r = 0.993). Corrected by regressing implied reference on lap number over laps ≤ L (firewall-safe), shrunk by `n/(n+300)`. **The unshrunk estimate is worse than no correction at all** — do not remove the shrinkage. |
 
@@ -62,7 +64,15 @@ Always `uv run` — there is no active venv on PATH.
   pit `under_caution` from it silently mislabelled 16 red-flag stops as green-flag. Read
   `track_status` directly for caution state.
 - **Leakage is prevented structurally, not detected.** `RaceState` (Phase 6) is built from
-  a frame truncated at lap L, so it cannot contain future data.
+  a frame truncated at lap L, so it cannot contain future data. The same discipline applies
+  across seasons (D15): every model-facing reader goes through `store.fittable_laps` /
+  `trainable_laps`, which filter to `TRAINING_SEASON`. A raw `read_table("laps")` in
+  modelling code is a leak, because `circuit` alone no longer identifies a race.
+- **A caution-contaminated lap-time scale poisons the whole state.** `build_state`'s
+  fallback lap time must come from *green* recent laps. Austria 2025 ran laps 1–3 behind a
+  safety car and the unfiltered median handed every driver an 86.0 s reference against a
+  71 s true pace, for a 21.5% race-time error. 2024 never triggered it. Found only by the
+  held-out season.
 - **No random train/test splits.** Leave-one-race-out only. Laps within a race are
   massively correlated. Circuit constants are model parameters and must be fitted
   *inside* the CV fold.
@@ -139,6 +149,26 @@ Next: **12** (Hungary 2024 post-race audit, the D4 narrative demo).
 Phase 7–10 CLIs already do that job with richer output. Building it would have been
 duplicate surface for no new information. D9's *other* half, the Next.js showcase, is
 built and is where the UI/UX story lives.
+
+### The out-of-season result, read this before quoting any accuracy number
+
+**Per-lap pace transfers. Race-time accumulation and uncertainty do not.**
+
+| Decision lap | Clean-lap MAE 2024 → 2025 | Race-time error 2024 → 2025 | 80% coverage 2025 |
+|---|---|---|---|
+| 15 | 0.89 → **0.67** s | 0.54 → **0.70** % | 0.71 |
+| 25 | 0.71 → **0.61** s | 0.43 → **0.85** % | 0.53 |
+| 35 | 0.76 → **0.63** s | 0.54 → **0.78** % | 0.59 |
+
+Clean-lap MAE is *better* on the held-out season at every lap, so the degradation and
+race-progress structure is a property of racing rather than of 2024. But race-time error
+roughly doubles and 80% intervals cover ~0.55. The per-lap errors are small and
+**correlated across a race** in a way the 2024-fitted variance components do not capture,
+so they accumulate into race-time bias while the intervals stay too narrow.
+
+Barcelona 2025 fails at all four decision laps and worsens with lap (1.57% → 2.38%), which
+is a circuit-level bias rather than noise. The uncertainty model is the part that most
+needs refitting before any of this is quoted live.
 
 ### Invariants from Phases 4–10
 

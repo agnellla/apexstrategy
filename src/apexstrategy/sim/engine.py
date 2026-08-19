@@ -234,7 +234,7 @@ class SimComponents:
     ) -> SimComponents:
         from ..config import TRAINING_CIRCUITS
 
-        laps = store.read_table("laps")
+        laps = store.fittable_laps()
         allowed = {c.key for c in TRAINING_CIRCUITS} - {exclude_circuit}
         laps = laps[laps["circuit"].isin(allowed)]
 

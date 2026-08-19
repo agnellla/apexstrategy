@@ -55,7 +55,9 @@ def race_id_for(circuit: str, season: int | None = None) -> str:
     return f"{season or config.SEASON}_{circuit}_{config.SESSION}"
 
 
-def race_laps(circuit: str, processed_dir: Path | None = None) -> pd.DataFrame:
+def race_laps(
+    circuit: str, processed_dir: Path | None = None, season: int | None = None
+) -> pd.DataFrame:
     """Every lap of one race, clean or not.
 
     The simulator needs the excluded laps too: a pit-in lap still happened and still
@@ -63,24 +65,48 @@ def race_laps(circuit: str, processed_dir: Path | None = None) -> pd.DataFrame:
     simulation view.
     """
     laps = read_table("laps", processed_dir)
-    out = laps[laps["circuit"] == circuit]
+    out = laps[(laps["circuit"] == circuit) & (laps["season"] == (season or config.SEASON))]
     if out.empty:
-        raise KeyError(f"no laps stored for circuit {circuit!r}")
+        raise KeyError(f"no laps stored for {circuit!r} in {season or config.SEASON}")
     return out.reset_index(drop=True)
 
 
-def race_total_laps(circuit: str, processed_dir: Path | None = None) -> int:
+def race_total_laps(
+    circuit: str, processed_dir: Path | None = None, season: int | None = None
+) -> int:
     """Scheduled race distance. A calendar fact, known before the race starts."""
     results = read_table("results", processed_dir)
-    return int(results.loc[results["circuit"] == circuit, "total_laps"].max())
+    match = (results["circuit"] == circuit) & (results["season"] == (season or config.SEASON))
+    return int(results.loc[match, "total_laps"].max())
 
 
 def training_laps(processed_dir: Path | None = None) -> pd.DataFrame:
-    """Clean laps from training circuits only.
+    """Clean laps from training circuits **in the training season** only.
 
-    The single entry point models should use. Monaco is excluded here rather than at
-    each call site so that D3's exclusion cannot be forgotten by a new model.
+    The single entry point models should use. Monaco is excluded here rather than at each
+    call site so that D3's exclusion cannot be forgotten by a new model, and the season
+    filter is here for the same reason: once a held-out season is in the store, a model
+    that reads laps directly would train on it and report a flattering out-of-sample
+    number. Both exclusions are structural, not remembered.
+    """
+    return trainable_laps(read_table("laps", processed_dir))
+
+
+def trainable_laps(laps: pd.DataFrame) -> pd.DataFrame:
+    """Apply the training-pool filters to a laps frame that is already in hand."""
+    allowed = {c.key for c in config.TRAINING_CIRCUITS}
+    return laps[
+        laps["is_clean"]
+        & laps["circuit"].isin(allowed)
+        & (laps["season"] == config.TRAINING_SEASON)
+    ].reset_index(drop=True)
+
+
+def fittable_laps(processed_dir: Path | None = None) -> pd.DataFrame:
+    """Every lap of the training season, clean or not.
+
+    What the simulator's constants are fitted from: pit losses need the pit laps that
+    ``training_laps`` drops. Season-gated for the same reason.
     """
     laps = read_table("laps", processed_dir)
-    allowed = {c.key for c in config.TRAINING_CIRCUITS}
-    return laps[laps["is_clean"] & laps["circuit"].isin(allowed)].reset_index(drop=True)
+    return laps[laps["season"] == config.TRAINING_SEASON].reset_index(drop=True)

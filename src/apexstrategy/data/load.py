@@ -51,10 +51,19 @@ def load_session(circuit: config.Circuit, season: int = config.SEASON) -> RawSes
     session = fastf1.get_session(season, circuit.event_name, config.SESSION)
     session.load(laps=True, telemetry=config.LOAD_TELEMETRY, weather=True, messages=True)
 
+    # Encode-then-verify: the round number in config is a belief about the calendar and
+    # this is what checks it against the real one. It caught a wrong event matcher on day
+    # one ('Austria' resolving to the Australian Grand Prix), so it stays.
+    #
+    # It is scoped to the season it was encoded for. Calendars are reordered between years
+    # -- Bahrain moved from round 1 to round 4 and Japan from 4 to 3 for 2025 -- so
+    # applying a 2024 belief to a 2025 session rejects a correctly matched race. The
+    # *name* match is what identifies the circuit in any season; the round number is a
+    # cross-check on one particular calendar.
     resolved_round = int(session.event["RoundNumber"])
-    if resolved_round != circuit.round_2024:
+    if season == config.SEASON and resolved_round != circuit.round_2024:
         raise ValueError(
-            f"{circuit.key}: config says round {circuit.round_2024}, "
+            f"{circuit.key}: config says round {circuit.round_2024} in {config.SEASON}, "
             f"FastF1 resolved round {resolved_round} ({session.event['EventName']})"
         )
 

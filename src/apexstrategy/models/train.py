@@ -36,7 +36,7 @@ SELECTED = LinearPaceBaseline
 
 def training_frame() -> pd.DataFrame:
     """Clean laps from trainable circuits, with the reference pace and target attached."""
-    laps = store.read_table("laps")
+    laps = store.fittable_laps()
     allowed = {c.key for c in config.TRAINING_CIRCUITS}
     laps = laps[laps["circuit"].isin(allowed)]
     laps = add_reference_pace(laps)

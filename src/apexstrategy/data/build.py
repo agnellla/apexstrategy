@@ -26,19 +26,37 @@ log = logging.getLogger(__name__)
 TABLE_NAMES = ("laps", "stints", "pits", "track_status", "weather", "results")
 
 
-def build(circuit_keys: tuple[str, ...] | None = None) -> dict[str, pd.DataFrame]:
-    """Ingest, normalise, validate, and write all tables."""
+def build(
+    circuit_keys: tuple[str, ...] | None = None,
+    seasons: tuple[int, ...] = (config.SEASON,),
+) -> dict[str, pd.DataFrame]:
+    """Ingest, normalise, validate, and write all tables.
+
+    Multi-season because a held-out season is the only test that asks the model to
+    generalise across cars, tyres and regulations rather than merely across circuits.
+    Season is part of ``race_id`` and of every table, and everything model-facing filters
+    to ``config.TRAINING_SEASON``, so a season in the store is a season the models cannot
+    see unless something deliberately asks for it.
+
+    Note that this rewrites each table wholesale, so a partial build drops what it does not
+    rebuild. Pass every season you want to keep.
+    """
     config.ensure_dirs()
     circuits = (
         tuple(config.CIRCUITS_BY_KEY[k] for k in circuit_keys) if circuit_keys else config.CIRCUITS
     )
 
     collected: dict[str, list[pd.DataFrame]] = {n: [] for n in TABLE_NAMES}
-    for circuit in circuits:
-        log.info("processing %s", circuit.key)
-        tables = normalize_session(load_session(circuit))
-        for name, df in tables.items():
-            collected[name].append(df)
+    for season in seasons:
+        for circuit in circuits:
+            log.info("processing %s %s", season, circuit.key)
+            try:
+                tables = normalize_session(load_session(circuit, season=season))
+            except Exception as exc:  # a circuit may simply not be on that year's calendar
+                log.warning("skipping %s %s: %s", season, circuit.key, exc)
+                continue
+            for name, df in tables.items():
+                collected[name].append(df)
 
     out: dict[str, pd.DataFrame] = {}
     for name, frames in collected.items():
@@ -56,15 +74,27 @@ def main(argv: list[str] | None = None) -> int:
         choices=sorted(config.CIRCUITS_BY_KEY),
         help="subset to build (default: all configured circuits)",
     )
+    parser.add_argument(
+        "--seasons",
+        nargs="*",
+        type=int,
+        default=[config.SEASON],
+        help="seasons to ingest; models only ever fit on config.TRAINING_SEASON",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    tables = build(tuple(args.circuits) if args.circuits else None)
+    tables = build(
+        tuple(args.circuits) if args.circuits else None,
+        tuple(args.seasons),
+    )
 
     laps = tables["laps"]
     print("\n=== clean-lap yield ===")
     print(yield_summary(laps).to_string())
     print(f"\noverall clean: {100 * laps['is_clean'].mean():.1f}%  ({len(laps)} laps)")
+    print("\n=== laps by season (only TRAINING_SEASON is ever fitted on) ===")
+    print(laps.groupby(["season", "circuit"]).size().to_string())
 
     print("\n=== reconstructed vs reported position ===")
     print(position_agreement(laps).to_string())

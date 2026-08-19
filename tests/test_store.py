@@ -47,8 +47,13 @@ def test_stint_retirements_agree_with_results(tables: dict[str, pd.DataFrame]) -
 
 
 def test_lapped_finishers_are_not_retirements(tables: dict[str, pd.DataFrame]) -> None:
-    """Bahrain 2024 classified all 20 drivers; 11 were lapped, none retired."""
-    bahrain = tables["results"].query("circuit == 'bahrain'")
+    """Bahrain 2024 classified all 20 drivers; 11 were lapped, none retired.
+
+    Season-filtered because the store holds more than one now. This test was implicitly
+    single-season and started failing the moment a held-out season arrived, which is the
+    cheapest possible reminder that ``circuit`` stopped being a unique race key.
+    """
+    bahrain = tables["results"].query("circuit == 'bahrain' and season == @config.SEASON")
     assert bahrain["is_retired"].sum() == 0
     assert (bahrain["laps_completed"] < bahrain["total_laps"]).sum() > 0
 
