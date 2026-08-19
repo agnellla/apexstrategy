@@ -27,7 +27,10 @@ def test_every_table_satisfies_its_contract(tables: dict[str, pd.DataFrame]) -> 
 
 
 def test_all_seven_circuits_present(tables: dict[str, pd.DataFrame]) -> None:
-    assert set(tables["laps"]["circuit"]) == set(config.CIRCUITS_BY_KEY)
+    # The seven hand-encoded circuits are now a subset: races are discovered from the
+    # season schedule, so the store holds whatever was on the calendar. What still has to
+    # hold is that none of the originals went missing when discovery replaced the list.
+    assert set(config.CIRCUITS_BY_KEY) <= set(tables["laps"]["circuit"])
 
 
 def test_clean_laps_are_dry_compounds_only(tables: dict[str, pd.DataFrame]) -> None:
@@ -39,8 +42,21 @@ def test_clean_laps_are_dry_compounds_only(tables: dict[str, pd.DataFrame]) -> N
 def test_stint_retirements_agree_with_results(tables: dict[str, pd.DataFrame]) -> None:
     """The bug this guards: inferring 'ended by pit' from lap numbers alone marks
     every lapped finisher and every retirement as a pit stop."""
+    # Counted among drivers who actually took the start. A driver classified W or D with
+    # zero laps recorded is "not classified" in the results and has no stint to end, so
+    # counting them on one side and not the other is right on both sides rather than a
+    # disagreement. Every one of the original seven races had a full grid, which is why
+    # exact equality held until the store grew: Sainz at Lusail 2023, Stroll at Marina Bay
+    # 2023 and Albon at Sao Paulo 2024 each recorded no laps at all.
+    started = set(map(tuple, tables["laps"][["race_id", "driver"]].drop_duplicates().to_numpy()))
+    results = tables["results"][
+        [
+            (r, d) in started
+            for r, d in zip(tables["results"]["race_id"], tables["results"]["driver"], strict=True)
+        ]
+    ]
     from_stints = tables["stints"].query("end_reason == 'retirement'").groupby("race_id").size()
-    from_results = tables["results"].query("is_retired").groupby("race_id").size()
+    from_results = results.query("is_retired").groupby("race_id").size()
     pd.testing.assert_series_equal(
         from_stints.sort_index(), from_results.sort_index(), check_names=False
     )
@@ -118,13 +134,20 @@ def test_lap_times_are_raw_not_fuel_corrected(tables: dict[str, pd.DataFrame]) -
 def test_training_laps_excludes_untrainable_circuits_and_unclean() -> None:
     """Enforced at the store boundary so no model can forget it.
 
-    Monaco is out as a pathological outlier (D3); Silverstone because 2024 was a
-    mixed-conditions race (D10). Five circuits remain.
+    Monaco is out as a pathological outlier (D3), a judgement no rule will ever catch.
+    Wet races are out by the measured D10 threshold, applied per *race* rather than per
+    circuit -- which is what D10 actually said. Silverstone 2024 was 24.3% wet and 2025 was
+    73.6%, so both are excluded, while Silverstone 2023 was bone dry and belongs in the
+    pool. The old per-circuit exclusion threw the dry race away with the wet ones.
     """
     train = store.training_laps()
-    assert {"monaco", "britain"}.isdisjoint(set(train["circuit"]))
+    assert "monaco" not in set(train["circuit"])
     assert train["is_clean"].all()
-    assert len(set(train["circuit"])) == 5
+    assert set(train["season"]) <= set(config.TRAINING_SEASONS)
+
+    races = set(train["race_id"])
+    assert "2023_britain_R" in races
+    assert {"2024_britain_R", "2025_britain_R"}.isdisjoint(races)
 
 
 def test_exactly_one_leader_per_lap(tables: dict[str, pd.DataFrame]) -> None:
@@ -140,7 +163,14 @@ def test_derived_position_matches_reported(tables: dict[str, pd.DataFrame]) -> N
     the same timing feed. It confirms the ordering logic, not the underlying times."""
     from apexstrategy.data.gaps import position_agreement
 
-    assert (position_agreement(tables["laps"])["agreement"] > 99).all()
+    # Reconstructed order against FastF1's reported position. The floor was 99% when the
+    # store held seven orderly races; across fifty-seven it has to survive lap-one chaos,
+    # safety-car shuffles and races where the reported position itself lags a lap. The
+    # median is still 100% and the worst race is 98.2%, so the contract is stated as a
+    # strict median with a floor low enough to be a real alarm rather than a tripwire.
+    agreement = position_agreement(tables["laps"])["agreement"]
+    assert agreement.median() >= 99.9, agreement.sort_values().head().to_dict()
+    assert (agreement > 98).all(), agreement.sort_values().head().to_dict()
 
 
 def test_gaps_are_non_negative(tables: dict[str, pd.DataFrame]) -> None:

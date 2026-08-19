@@ -10,12 +10,105 @@ Deliberately does no cleaning, renaming, or derivation -- that is ``normalize.py
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
 from .. import config
 
 log = logging.getLogger(__name__)
+
+
+#: Venue names FastF1 reports that the project already had a shorter key for. The seven
+#: hand-encoded circuits keep their original keys so that stored data, tests and the whole
+#: build log stay readable; every other venue is keyed by its slugified location.
+LEGACY_KEYS: dict[str, str] = {
+    "Sakhir": "bahrain",
+    "Suzuka": "suzuka",
+    "Monaco": "monaco",
+    "Barcelona": "barcelona",
+    "Spielberg": "austria",
+    "Silverstone": "britain",
+    "Budapest": "hungary",
+    # Same circuit, different Location string between seasons. Keying on the venue is more
+    # stable than keying on the event name, but "more stable" is not "stable", and an
+    # unnoticed drift here silently splits one track's history into two circuits that each
+    # look new to the model.
+    "Miami": "miami",
+    "Miami Gardens": "miami",
+}
+
+
+def circuit_key(location: str) -> str:
+    """A stable key for a venue.
+
+    Keyed on ``Location`` rather than ``EventName`` because the venue is the thing the
+    physics belongs to and the event name is marketing: Silverstone has been the British
+    Grand Prix throughout, but Imola is the "Emilia Romagna" Grand Prix only some years,
+    and a sponsor can rename a race without moving it.
+    """
+    if location in LEGACY_KEYS:
+        return LEGACY_KEYS[location]
+    slug = unicodedata.normalize("NFKD", location).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]+", "_", slug.lower()).strip("_")
+
+
+@dataclass(frozen=True)
+class RaceRef:
+    """One race on one calendar, resolved before anything is downloaded."""
+
+    key: str
+    season: int
+    round: int
+    event_name: str
+    location: str
+
+
+def discover_races(season: int) -> list[RaceRef]:
+    """Every race on a season's calendar, keyed by venue.
+
+    Replaces hand-encoding a circuit registry, which was right for seven races and does not
+    scale to a decade of them. The encode-then-verify check it replaces still exists for the
+    original seven (``load_session``); here the schedule *is* the source, so there is
+    nothing to verify it against.
+    """
+    import fastf1
+
+    config.setup_cache()
+    schedule = fastf1.get_event_schedule(season, include_testing=False)
+    return [
+        RaceRef(
+            key=circuit_key(str(row.Location)),
+            season=season,
+            round=int(row.RoundNumber),
+            event_name=str(row.EventName),
+            location=str(row.Location),
+        )
+        for row in schedule.itertuples()
+        if int(row.RoundNumber) > 0
+    ]
+
+
+def load_race(ref: RaceRef) -> RawSession:
+    """Load a discovered race by round number.
+
+    By round rather than by name because the name is what changes between seasons, and a
+    round number resolved from that season's own schedule cannot drift.
+    """
+    import fastf1
+
+    config.setup_cache()
+    session = fastf1.get_session(ref.season, ref.round, config.SESSION)
+    session.load(laps=True, telemetry=config.LOAD_TELEMETRY, weather=True, messages=True)
+    return RawSession(
+        race_id=race_id(ref.season, ref.key),
+        season=ref.season,
+        round=ref.round,
+        circuit=ref.key,
+        session=session,
+        total_laps=int(session.total_laps),
+    )
 
 
 def race_id(season: int, circuit_key: str, session: str = "R") -> str:

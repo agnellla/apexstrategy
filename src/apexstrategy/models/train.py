@@ -23,7 +23,14 @@ from ..evaluation.loro import (
     run_loro,
     summarise,
 )
-from .pace import TARGET, GBMPaceModel, LinearPaceBaseline, add_reference_pace, feature_frame
+from .pace import (
+    TARGET,
+    GBMPaceModel,
+    LinearPaceBaseline,
+    QuadraticPaceBaseline,
+    add_reference_pace,
+    feature_frame,
+)
 
 log = logging.getLogger(__name__)
 
@@ -31,14 +38,23 @@ MODEL_PATH = config.MODELS_DIR / "pace_model.joblib"
 
 #: Chosen on LORO evidence, not on principle -- see the Phase 5 build log. The boosted
 #: model lost on every metric that matters, including degradation recovery.
-SELECTED = LinearPaceBaseline
+#: Superseded D11's linear baseline once the data reached 40 races. Not by adopting the
+#: boosted model, which still loses on held-out error (0.553 against 0.539) while fitting
+#: the training set far better -- extra capacity buys memorisation here, not structure.
+#: The quadratic wins on every fold and, more to the point, removes the bias curvature in
+#: tyre age that the linear form cannot represent: -0.26 s/lap on tyres past forty laps
+#: became +0.01 s. That bias is small per lap and accumulates over a stint, in exactly the
+#: decision the product exists to make.
+SELECTED = QuadraticPaceBaseline
 
 
 def training_frame() -> pd.DataFrame:
     """Clean laps from trainable circuits, with the reference pace and target attached."""
+    # Derived from the store, not from the hand list of seven the project started with.
+    # That list was still the filter here after discovery replaced it everywhere else, so
+    # the persisted model was quietly trained on five circuits while forty were available.
     laps = store.fittable_laps()
-    allowed = {c.key for c in config.TRAINING_CIRCUITS}
-    laps = laps[laps["circuit"].isin(allowed)]
+    laps = laps[laps["circuit"].isin(store.trainable_circuits())]
     laps = add_reference_pace(laps)
     return laps[laps["is_clean"]].dropna(subset=[TARGET, "tyre_age"]).reset_index(drop=True)
 

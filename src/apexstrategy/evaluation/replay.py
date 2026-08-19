@@ -112,7 +112,7 @@ def _lap_category(laps: pd.DataFrame) -> pd.Series:
 def loro_pace_model(circuit: str):
     """Fit the selected pace model on every trainable circuit except ``circuit``."""
     laps = store.fittable_laps()
-    allowed = {c.key for c in config.TRAINING_CIRCUITS} - {circuit}
+    allowed = store.trainable_circuits() - {circuit}
     laps = laps[laps["circuit"].isin(allowed)]
     laps = add_reference_pace(laps)
     train = laps[laps["is_clean"]].dropna(subset=[TARGET, "tyre_age"])

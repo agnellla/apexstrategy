@@ -39,10 +39,13 @@ SEED = 20240804  # Hungarian GP 2024, the demo race (D4)
 SEASON = 2024
 SESSION = "R"
 
-#: The season models are fitted on. Everything model-facing filters to this, structurally
+#: The seasons models are fitted on. Everything model-facing filters to these, structurally
 #: rather than by convention, so that adding a season to the store cannot silently turn an
 #: out-of-sample test into an in-sample one. That is the same leakage discipline the
 #: temporal firewall applies within a race, applied across seasons.
+TRAINING_SEASONS: tuple[int, ...] = (2023, 2024)
+
+#: Kept as the single "current" season for the demo grid and for race_id defaults.
 TRAINING_SEASON = 2024
 
 #: Seasons held out entirely. Never fitted on, only predicted. A model validated by

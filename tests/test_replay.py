@@ -102,8 +102,11 @@ class TestLeaveOneRaceOut:
     """The replay must not be fed anything estimated from the race it is replaying."""
 
     def test_pit_loss_excludes_the_replayed_circuit(self) -> None:
-        laps = store.read_table("laps")
-        allowed = {c.key for c in config.TRAINING_CIRCUITS}
+        # Both sides must draw from the same pool or this compares pool sizes rather than
+        # the exclusion: the trainable set is derived from the store now, not a hand list
+        # of five, so reading it from config here silently made "without" the larger one.
+        laps = store.fittable_laps()
+        allowed = store.trainable_circuits()
         model = loro_pace_model(GATE_CIRCUIT)
 
         with_it, _ = fit_pit_loss(laps[laps["circuit"].isin(allowed)], model)

@@ -92,13 +92,55 @@ def training_laps(processed_dir: Path | None = None) -> pd.DataFrame:
     return trainable_laps(read_table("laps", processed_dir))
 
 
+#: Share of a race's laps run on a wet compound above which the race is not dry.
+#: D10 measured Silverstone 2024 at 24.3% against this line and excluded it by hand. With
+#: seventy races a hand list is not maintainable, so the same threshold is now applied as a
+#: rule to every race in the store. Hand-encoding it for one race and forgetting it for the
+#: next sixty-nine is exactly the failure mode this replaces.
+WET_RACE_THRESHOLD = 0.05
+
+#: Venues excluded on judgement rather than measurement, which no rule will ever catch.
+#: Monaco is a pathological outlier: near-zero overtaking and a pit lane whose geometry
+#: makes its pit loss meaningless elsewhere (D3).
+EXCLUDED_VENUES = frozenset({"monaco"})
+
+
+def wet_share(laps: pd.DataFrame) -> pd.Series:
+    """Fraction of each race's laps run on an intermediate or wet tyre."""
+    from .schema import WET_COMPOUNDS
+
+    return laps.assign(_wet=laps["compound"].isin(WET_COMPOUNDS)).groupby("race_id")["_wet"].mean()
+
+
+def dry_race_ids(laps: pd.DataFrame) -> set[str]:
+    """Races dry enough to fit a dry-tyre model on, measured rather than listed."""
+    share = wet_share(laps)
+    return set(share[share <= WET_RACE_THRESHOLD].index)
+
+
+def trainable_circuits(laps: pd.DataFrame | None = None) -> set[str]:
+    """Circuits the models are allowed to learn from, derived rather than listed.
+
+    ``config.TRAINING_CIRCUITS`` was a hand list of five and is kept for the notes it
+    carries, but it stopped being the source of truth the moment the store grew past the
+    seven races it was written for. Call sites that filter on it silently ignore every race
+    added since.
+    """
+    laps = read_table("laps") if laps is None else laps
+    return set(trainable_laps(laps)["circuit"].unique())
+
+
 def trainable_laps(laps: pd.DataFrame) -> pd.DataFrame:
-    """Apply the training-pool filters to a laps frame that is already in hand."""
-    allowed = {c.key for c in config.TRAINING_CIRCUITS}
+    """Apply the training-pool filters to a laps frame that is already in hand.
+
+    Three filters, and only one of them is a list: the season gate (D15), the measured
+    dry-race rule that replaces D10's hand exclusion, and the venues excluded on judgement.
+    """
     return laps[
         laps["is_clean"]
-        & laps["circuit"].isin(allowed)
-        & (laps["season"] == config.TRAINING_SEASON)
+        & laps["season"].isin(config.TRAINING_SEASONS)
+        & laps["race_id"].isin(dry_race_ids(laps))
+        & ~laps["circuit"].isin(EXCLUDED_VENUES)
     ].reset_index(drop=True)
 
 
@@ -109,4 +151,4 @@ def fittable_laps(processed_dir: Path | None = None) -> pd.DataFrame:
     ``training_laps`` drops. Season-gated for the same reason.
     """
     laps = read_table("laps", processed_dir)
-    return laps[laps["season"] == config.TRAINING_SEASON].reset_index(drop=True)
+    return laps[laps["season"].isin(config.TRAINING_SEASONS)].reset_index(drop=True)

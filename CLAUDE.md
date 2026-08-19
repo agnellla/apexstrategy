@@ -42,9 +42,12 @@ Always `uv run` — there is no active venv on PATH.
 | **D8** | The sibling `pitwindow/` project is **mined, not restarted**. See the Phase 1 build log for the component-by-component disposition. |
 | **D9** | **Two front-ends.** Streamlit = internal tool (diagnostics, validation). A separate **Next.js showcase on Vercel fed by precomputed scenario JSON** carries the UI/UX story — Streamlit fights design control. Consequence: **the strategy engine must emit JSON-serialisable results**, not Streamlit-coupled objects. |
 | **D10** | **Silverstone 2024 excluded from fitting** — 24.3% wet-compound laps vs a 5% dry threshold. Contamination was measured, not assumed: its pit loss came out 35.3s vs 20–25s elsewhere. **Training pool is 5 circuits**, not 6. |
-| **D11** | **The linear pace baseline ships; LightGBM does not.** LORO MAE 0.556 vs 0.626, degradation error 0.0137 vs 0.0174 s/lap. With 5 circuits, the GBM learns circuit-specific structure that does not transfer. Do not re-adopt a boosted model without beating these numbers. |
+| **D11** | **The linear family ships; LightGBM does not. Re-tested at 5× the data and confirmed.** At 23 circuits / 25,429 laps: LORO MAE **0.610 vs 0.672**, worst fold **1.12 vs 2.11**, sd across folds **0.16 vs 0.35**. A grouped-fold capacity sweep makes the mechanism explicit — the GBM fits training data far better (0.35 train) and generalises worse (0.55 held-out, gap +0.20), and more capacity widens the gap. Extra capacity buys memorisation of individual races here, not transferable structure. See D18 for what *did* improve. |
 | **D12** | **Dirty-air laps stay excluded, not a covariate.** Tested fairly (fixed clean test set, only training data varied): +39% data does not improve clean-lap prediction. Columns remain in the store; revisit when product-Phase 2 needs a traffic penalty. |
 | **D15** | **2025 is a held-out season, never fitted on.** `config.TRAINING_SEASON = 2024`, `HOLDOUT_SEASONS = (2025,)`, enforced in `store.trainable_laps`/`fittable_laps` and asserted by `tests/test_season_gate.py`, not remembered at call sites. LORO within 2024 only asks the model to generalise across *circuits*; a held-out season asks it to generalise across cars, tyres and regulations, which is the question anyone deploying it would ask. **Result: 18/20 replays pass on 2024, 11/20 on 2025.** Do not report the 2024 number without the 2025 one. |
+| **D16** | **Races are discovered from the schedule, not hand-encoded.** Keyed on FastF1's `Location` (the venue), because `EventName` is marketing and a sponsor can rename a race without moving it. Aliases exist for the seven original keys and for venue drift (`Miami`/`Miami Gardens` are one circuit). The `round_2024` encode-then-verify check is scoped to 2024: calendars reorder, and applying a 2024 belief to a 2025 session rejects correctly matched races. |
+| **D17** | **Exclusions are rules, not lists.** D10's wet-race exclusion is now a measured 5% wet-lap threshold applied per *race* — which is what D10 actually said. It reproduces the original judgement exactly (Silverstone 2024 measures 24.3%) and catches six more nobody had listed, including São Paulo 2024 at 100%. Silverstone **2023 is dry and belongs in the pool**; the old per-circuit exclusion threw it away. Monaco stays a named venue: no rule catches "pathological". |
+| **D18** | **`QuadraticPaceBaseline` ships; the linear form is superseded.** Not for MAE (0.535 vs 0.539, inside fold noise) but for **bias**: the linear form's out-of-fold error curves from −0.11 s on fresh rubber to −0.26 s past forty laps, and a model linear in tyre age cannot represent that. The quadratic flattens it to −0.001/+0.005 and wins on every fold. Per-lap it is negligible; over a stint it is the stay-out decision. **No per-circuit intercept** — `reference_pace` already absorbs constant circuit offsets (Phase 6), and adding one makes the model undefined at unseen circuits. |
 | **D14** | **Driver-level uncertainty is reference *sampling* error, split shared/private.** A driver's persistent model misfit (sd 0.359s) cancels between the reference estimate and the future residuals, so it is not sampled at all. What remains is **mostly field-wide** — 76% of its variance at lap 5, 45% at lap 35 — and is drawn once per sim, not per driver: a shared error cannot change who beats whom, a private one can. Do not merge them back together. |
 | **D13** | **The race-progress residual is corrected in-race, with shrinkage.** The pace model has one pooled `lap_number` coefficient; true per-circuit rates span −0.027 to −0.096 s/lap, and under LORO that gap was the dominant replay error (r = 0.993). Corrected by regressing implied reference on lap number over laps ≤ L (firewall-safe), shrunk by `n/(n+300)`. **The unshrunk estimate is worse than no correction at all** — do not remove the shrinkage. |
 
@@ -101,8 +104,12 @@ validates on write**, not on read.
 
 ## Store (7 tables, `data/processed/`)
 
-The **5** trainable circuits are austria, bahrain, barcelona, hungary, suzuka. Clean-lap
-yield is 59.2% after dirty-air filtering.
+**70 races ingested across 2023–2025; 57 have usable timing data** (13 of 2025's return
+nothing from the API, so the holdout is 11 races, not a full season — say so rather than
+implying a complete year). 25 circuits, 62,613 laps.
+
+Training pool after the computed rules: **40 races, 23 circuits, 24,409 clean laps**,
+against 5 races and 3,868 before.
 
 Models read via `store.training_laps()` — it applies `is_clean` plus the Monaco (D3) and
 Silverstone (D10) exclusions, so no model can forget either.
@@ -150,15 +157,40 @@ Phase 7–10 CLIs already do that job with richer output. Building it would have
 duplicate surface for no new information. D9's *other* half, the Next.js showcase, is
 built and is where the UI/UX story lives.
 
+### Underfit or overfit? Neither, and the diagnosis is what mattered
+
+Learning curve for the linear form, folds are whole races:
+
+| Training races | Train MAE | Held-out MAE | Gap |
+|---|---|---|---|
+| 5 | 0.517 | 0.590 | +0.073 |
+| 23 | 0.537 | 0.542 | +0.005 |
+| 46 | 0.538 | 0.509 | −0.029 |
+
+**Flat.** Nine times the data moves training error by 0.02 s and the generalisation gap is
+zero. All three generalisation cases (new circuit / new season / both) land within 0.04 s
+of each other, which is not a virtue: a model with nothing to overfit has nothing to fail
+to transfer.
+
+The GBM sweep supplies the other half. It reaches 0.35 s on training data and 0.55 s held
+out, and *more* capacity widens the gap. So the ~0.53 s held-out floor is not a capacity
+problem: it is close to the irreducible noise in a single lap time.
+
+What the residuals *did* justify was one specific term (D18). MAE was the wrong thing to
+look at — the systematic bias was in tyre age, it curved, and a linear-in-age model cannot
+represent a curve.
+
 ### The out-of-season result, read this before quoting any accuracy number
 
 **Per-lap pace transfers. Race-time accumulation and uncertainty do not.**
 
 | Decision lap | Clean-lap MAE 2024 → 2025 | Race-time error 2024 → 2025 | 80% coverage 2025 |
 |---|---|---|---|
-| 15 | 0.89 → **0.67** s | 0.54 → **0.70** % | 0.71 |
-| 25 | 0.71 → **0.61** s | 0.43 → **0.85** % | 0.53 |
-| 35 | 0.76 → **0.63** s | 0.54 → **0.78** % | 0.59 |
+| 15 | 0.92 → **0.64** s | 0.62 → **0.68** % | 0.71 |
+| 25 | 0.75 → **0.61** s | 0.50 → **0.94** % | 0.53 |
+| 35 | 0.81 → **0.59** s | 0.52 → **0.75** % | 0.62 |
+
+Gate: **17/20 pass on 2024, 13/20 on 2025** (was 11/20 before D17/D18).
 
 Clean-lap MAE is *better* on the held-out season at every lap, so the degradation and
 race-progress structure is a property of racing rather than of 2024. But race-time error

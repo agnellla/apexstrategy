@@ -18,7 +18,7 @@ from .. import config
 from . import store
 from .clean import yield_summary
 from .gaps import DIRTY_AIR_THRESHOLD_S, dirty_air_sensitivity, position_agreement
-from .load import load_session
+from .load import discover_races, load_race, load_session
 from .normalize import normalize_session
 
 log = logging.getLogger(__name__)
@@ -29,6 +29,7 @@ TABLE_NAMES = ("laps", "stints", "pits", "track_status", "weather", "results")
 def build(
     circuit_keys: tuple[str, ...] | None = None,
     seasons: tuple[int, ...] = (config.SEASON,),
+    all_circuits: bool = False,
 ) -> dict[str, pd.DataFrame]:
     """Ingest, normalise, validate, and write all tables.
 
@@ -48,6 +49,22 @@ def build(
 
     collected: dict[str, list[pd.DataFrame]] = {n: [] for n in TABLE_NAMES}
     for season in seasons:
+        if all_circuits:
+            refs = discover_races(season)
+            log.info("%s: %d races on the calendar", season, len(refs))
+            for i, ref in enumerate(refs, 1):
+                log.info("processing %s %s (%d/%d)", season, ref.key, i, len(refs))
+                try:
+                    tables = normalize_session(load_race(ref))
+                except Exception as exc:
+                    # A race can be missing, incomplete, or shaped in a way the contracts
+                    # reject. Skipping loudly beats failing a 70-race ingest on one bad row.
+                    log.warning("skipping %s %s: %s", season, ref.key, exc)
+                    continue
+                for name, df in tables.items():
+                    collected[name].append(df)
+            continue
+
         for circuit in circuits:
             log.info("processing %s %s", season, circuit.key)
             try:
@@ -75,6 +92,11 @@ def main(argv: list[str] | None = None) -> int:
         help="subset to build (default: all configured circuits)",
     )
     parser.add_argument(
+        "--all-circuits",
+        action="store_true",
+        help="ingest every race on each season's calendar, discovered from the schedule",
+    )
+    parser.add_argument(
         "--seasons",
         nargs="*",
         type=int,
@@ -87,6 +109,7 @@ def main(argv: list[str] | None = None) -> int:
     tables = build(
         tuple(args.circuits) if args.circuits else None,
         tuple(args.seasons),
+        all_circuits=args.all_circuits,
     )
 
     laps = tables["laps"]

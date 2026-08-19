@@ -107,6 +107,45 @@ class LinearPaceBaseline(ResidualSampler):
         return np.asarray(self.model_.predict(data))
 
 
+class QuadraticPaceBaseline(ResidualSampler):
+    """Linear baseline plus a per-compound *curve* in tyre age.
+
+    Added because the residual diagnostics pointed at exactly one thing. Out of fold on 40
+    races, the linear baseline's bias runs -0.13 s on fresh rubber, +0.07 s in the middle
+    of a stint and -0.32 s past forty laps: curvature, in the one variable the entire
+    strategy layer turns on. A model linear in tyre age cannot represent a tyre that falls
+    away and then stabilises, and the error it makes is largest exactly where the
+    stay-out-or-box decision is hardest.
+
+    Deliberately *not* a per-circuit intercept, which the residuals also seem to ask for.
+    A constant circuit offset is already absorbed downstream: ``reference_pace`` is
+    estimated per driver per race, so any offset shared by everyone at a track cancels
+    exactly (Phase 6). Adding it here would be double-counting, and worse, it would make
+    the model undefined at a circuit it has never seen -- which is the case the
+    generalisation matrix exists to measure.
+    """
+
+    FORMULA = "_y ~ C(compound) + C(compound):tyre_age + C(compound):I(tyre_age**2) + lap_number"
+
+    def __init__(self) -> None:
+        self.model_ = None
+
+    def fit(self, X: pd.DataFrame, y: pd.Series) -> QuadraticPaceBaseline:
+        import statsmodels.formula.api as smf
+
+        data = X[["compound", "tyre_age", "lap_number"]].copy()
+        data["compound"] = data["compound"].astype(str)
+        data["_y"] = np.asarray(y)
+        self.model_ = smf.ols(self.FORMULA, data=data).fit()
+        self._store_residuals(y, self.predict(X))
+        return self
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        data = X[["compound", "tyre_age", "lap_number"]].copy()
+        data["compound"] = data["compound"].astype(str)
+        return np.asarray(self.model_.predict(data))
+
+
 class GBMPaceModel(ResidualSampler):
     """LightGBM on the full feature set, with native categorical handling.
 

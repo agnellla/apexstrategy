@@ -232,10 +232,9 @@ class SimComponents:
     def fit(
         cls, pace_model: PaceModel, exclude_circuit: str | None = None, **overrides
     ) -> SimComponents:
-        from ..config import TRAINING_CIRCUITS
 
         laps = store.fittable_laps()
-        allowed = {c.key for c in TRAINING_CIRCUITS} - {exclude_circuit}
+        allowed = store.trainable_circuits() - {exclude_circuit}
         laps = laps[laps["circuit"].isin(allowed)]
 
         losses, share = fit_pit_loss(laps, pace_model)
