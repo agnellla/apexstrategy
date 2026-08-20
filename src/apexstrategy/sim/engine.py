@@ -79,18 +79,43 @@ class PaceModel(Protocol):
 #: only when there is no model to fit the split against. ``fit_pit_loss`` measures it.
 DEFAULT_PIT_IN_LAP_SHARE = 0.18
 
-#: Lap-time multiplier while a caution is out. Measured at 1.21 on the 27 caution laps in
-#: the store -- all of them Austria's late VSC, so this is a thin estimate on one event.
-#: It is close to inert for the current circuit set (0.2% of laps) and becomes
-#: load-bearing only when Phase 9 starts varying safety-car assumptions.
-DEFAULT_CAUTION_LAP_MULTIPLIER = 1.21
+#: Lap-time multipliers while a caution is out, **by kind of caution**, because they are
+#: not the same thing. A single 1.21 stood in for all of them when the store held 27 caution
+#: laps, all from one VSC. Across 1,240 caution laps in the usable races the three regimes
+#: separate cleanly, and a safety car is nothing like a virtual one:
+#:
+#: | Regime | Fitted | n |
+#: |---|---|---|
+#: | safety car | 1.450 | 845 |
+#: | VSC deployed | 1.200 | 376 |
+#: | VSC ending | 1.031 | 19 |
+#:
+#: These are fallbacks; ``SimComponents.fit`` re-derives them from the training races. The
+#: old single value was closest to a VSC and badly wrong for a safety car, which is the
+#: regime that actually dominates -- and caution laps carried 78% of held-out race-time
+#: bias as a result.
+DEFAULT_CAUTION_LAP_MULTIPLIERS: dict[str, float] = {
+    "sc": 1.450,
+    "vsc": 1.200,
+    "vsc_ending": 1.031,
+}
 
-#: A stop taken under caution costs a fraction of a green-flag one, because the whole
-#: field is slowed while the stopping car loses only the pit lane. **This is an assumed
-#: value, not a fitted one:** the store contains no green-flag-to-caution stop pairs to
-#: fit it from (Monaco's 16 stops were taken during a red-flag stoppage, where the cost is
-#: zero for a different reason). Flagged rather than quietly fitted on unsuitable data.
-ASSUMED_CAUTION_PIT_MULTIPLIER = 0.45
+#: Used when a caution lap is known but its kind is not, which is the case whenever a
+#: caution is supplied as an assumption rather than replayed. Frequency-weighted over the
+#: fitted regimes rather than picked, so an unlabelled caution costs what the average one
+#: costs.
+DEFAULT_CAUTION_LAP_MULTIPLIER = 1.368
+
+#: A stop taken under caution costs a fraction of a green-flag one, because the whole field
+#: is slowed while the stopping car loses only the pit lane. This **was** an assumed 0.45:
+#: seven races contained no green-to-caution stop pairs to fit it from. Fifty-seven races
+#: contain 170 of them in the usable set, so it is fitted now, and the assumption was 23%
+#: too low.
+DEFAULT_CAUTION_PIT_MULTIPLIER = 0.579
+
+#: Below this a regime has not been observed often enough to fit and falls back.
+MIN_LAPS_FOR_CAUTION_FIT = 25
+MIN_STOPS_FOR_CAUTION_PIT_FIT = 30
 
 
 def fit_pit_loss(laps: pd.DataFrame, pace_model: PaceModel) -> tuple[np.ndarray, float]:
@@ -146,6 +171,112 @@ def fit_pit_loss(laps: pd.DataFrame, pace_model: PaceModel) -> tuple[np.ndarray,
     losses = (stops["excess_s"] + stops["next_excess_s"]).to_numpy()
     share = float(np.median(stops["excess_s"]) / np.median(losses))
     return losses, share
+
+
+def caution_regime(track_status: pd.Series) -> pd.Series:
+    """Which caution regime each lap ran under: sc, vsc, vsc_ending, or green.
+
+    Priority order, not equality: FastF1 concatenates every code active during the lap, so
+    "1254" is AllClear+Yellow+SC+Red and a lap that saw a safety car at any point is a
+    safety-car lap. Yellow alone is deliberately absent -- yellow-flag laps run at 1.006 of
+    green pace, so treating them as cautions would slow them for no reason.
+    """
+    from ..data.clean import STATUS_SAFETY_CAR, STATUS_VSC_DEPLOYED, STATUS_VSC_ENDING
+
+    text = track_status.fillna("").astype(str)
+    out = pd.Series("green", index=track_status.index, dtype="object")
+    out[text.str.contains(STATUS_VSC_ENDING, regex=False)] = "vsc_ending"
+    out[text.str.contains(STATUS_VSC_DEPLOYED, regex=False)] = "vsc"
+    out[text.str.contains(STATUS_SAFETY_CAR, regex=False)] = "sc"
+    return out
+
+
+def fit_caution_lap_multipliers(laps: pd.DataFrame) -> dict[str, float]:
+    """How much slower a lap runs under each caution regime, as a ratio to green pace.
+
+    Measured against the driver's own median green non-pit lap in that race, so a car's
+    pace and the circuit's lap length both cancel and what is left is the regime. Regimes
+    with too few laps to estimate fall back rather than fitting on a handful.
+    """
+    laps = laps[laps["lap_time_s"].notna() & (laps["lap_number"] > 1)]
+    regime = caution_regime(laps["track_status"])
+    racing = ~laps["is_pit_in"] & ~laps["is_pit_out"]
+
+    green = laps[(regime == "green") & racing]
+    base = green.groupby(["race_id", "driver"])["lap_time_s"].median()
+    keyed = pd.MultiIndex.from_frame(laps[["race_id", "driver"]])
+    ratio = laps["lap_time_s"] / pd.Series(keyed.map(base), index=laps.index)
+
+    out = dict(DEFAULT_CAUTION_LAP_MULTIPLIERS)
+    for name in out:
+        sample = ratio[(regime == name) & racing].dropna()
+        if len(sample) >= MIN_LAPS_FOR_CAUTION_FIT:
+            out[name] = float(sample.median())
+    return out
+
+
+def fit_caution_pit_multiplier(
+    laps: pd.DataFrame, pace_model: PaceModel, lap_multipliers: dict[str, float]
+) -> float:
+    """What a stop costs under caution, as a fraction of a green-flag stop.
+
+    The measurement has to charge each lap at its *own* regime's pace or it double-counts:
+    a caution in-lap is already slow because there is a safety car out, and attributing
+    that to the pit stop makes a caution stop look like it costs three green stops. Netting
+    the regime out first gives 0.579 -- the field is slowed while the stopping car loses
+    only the pit lane, which is the whole reason teams stop under a safety car.
+    """
+    from ..data.clean import STATUS_RED
+    from ..data.schema import DRY_COMPOUNDS
+    from ..models.pace import add_reference_pace, feature_frame
+
+    laps = add_reference_pace(laps).sort_values(["race_id", "driver", "lap_number"])
+    laps = laps[
+        laps["reference_pace_s"].notna()
+        & laps["lap_time_s"].notna()
+        & laps["compound"].isin(DRY_COMPOUNDS)
+    ]
+    if laps.empty:
+        return DEFAULT_CAUTION_PIT_MULTIPLIER
+
+    expected = laps["reference_pace_s"] + pace_model.predict(
+        feature_frame(laps.assign(tyre_age=laps["tyre_age"].fillna(1.0)))
+    )
+    laps = laps.assign(expected=expected)
+    key = ["race_id", "driver"]
+    for column in ("lap_time_s", "expected", "track_status", "is_pit_out"):
+        laps["next_" + column] = laps.groupby(key)[column].shift(-1)
+
+    def scaled(status: pd.Series, expect: pd.Series) -> pd.Series:
+        regime = caution_regime(status)
+        return expect * regime.map(lambda r: lap_multipliers.get(r, 1.0))
+
+    # Red flags are excluded: a lap spanning a stoppage runs to thousands of seconds and is
+    # not a pit stop cost by any definition.
+    red = laps["track_status"].fillna("").astype(str).str.contains(STATUS_RED, regex=False) | laps[
+        "next_track_status"
+    ].fillna("").astype(str).str.contains(STATUS_RED, regex=False)
+    stops = laps[
+        laps["is_pit_in"]
+        & laps["next_is_pit_out"].astype("boolean").fillna(False).astype(bool)
+        & laps["next_lap_time_s"].notna()
+        & ~red
+    ]
+    if stops.empty:
+        return DEFAULT_CAUTION_PIT_MULTIPLIER
+
+    loss = (stops["lap_time_s"] - scaled(stops["track_status"], stops["expected"])) + (
+        stops["next_lap_time_s"] - scaled(stops["next_track_status"], stops["next_expected"])
+    )
+    under = (caution_regime(stops["track_status"]) != "green") | (
+        caution_regime(stops["next_track_status"]) != "green"
+    )
+    green_loss, caution_loss = loss[~under], loss[under]
+    if len(caution_loss) < MIN_STOPS_FOR_CAUTION_PIT_FIT or green_loss.empty:
+        return DEFAULT_CAUTION_PIT_MULTIPLIER
+    if green_loss.median() <= 0:
+        return DEFAULT_CAUTION_PIT_MULTIPLIER
+    return float(caution_loss.median() / green_loss.median())
 
 
 @dataclass(frozen=True)
@@ -221,8 +352,14 @@ class SimComponents:
     #: the tail of slow stops is the part that matters for risk and a Gaussian loses it.
     pit_loss_s: np.ndarray
     pit_in_lap_share: float = DEFAULT_PIT_IN_LAP_SHARE
+    #: Per-regime lap multipliers, fitted. Used whenever the *kind* of caution is known.
+    caution_lap_multipliers: dict[str, float] = field(
+        default_factory=lambda: dict(DEFAULT_CAUTION_LAP_MULTIPLIERS)
+    )
+    #: Used when a lap is known to be under caution but its regime is not, which is the
+    #: case for an assumed caution rather than a replayed one.
     caution_lap_multiplier: float = DEFAULT_CAUTION_LAP_MULTIPLIER
-    caution_pit_multiplier: float = ASSUMED_CAUTION_PIT_MULTIPLIER
+    caution_pit_multiplier: float = DEFAULT_CAUTION_PIT_MULTIPLIER
     #: Phase 8 hierarchical noise. ``None`` falls back to the model's own i.i.d.
     #: ``predict_dist``, which is the Phase 7 behaviour and is badly under-dispersed at
     #: race level -- kept so the Phase 7 gate stays reproducible and the A/B is one flag.
@@ -246,15 +383,23 @@ class SimComponents:
         losses, share = fit_pit_loss(laps, pace_model)
         if losses.size < 20:
             raise ValueError(f"only {losses.size} pit stops available after exclusions")
+
+        multipliers = fit_caution_lap_multipliers(laps)
         return cls(
             pace_model=pace_model,
             pit_loss_s=losses,
             **{
                 "pit_in_lap_share": share,
+                "caution_lap_multipliers": multipliers,
+                "caution_pit_multiplier": fit_caution_pit_multiplier(laps, pace_model, multipliers),
                 "noise": NoiseModel.fit(laps, pace_model),
                 **overrides,
             },
         )
+
+    def caution_multiplier(self, regime: str) -> float:
+        """Lap multiplier for a named regime, or the blended one when it is unknown."""
+        return self.caution_lap_multipliers.get(regime, self.caution_lap_multiplier)
 
     def sample_pit_loss(self, size: tuple[int, ...], rng: np.random.Generator) -> np.ndarray:
         return rng.choice(self.pit_loss_s, size=size, replace=True)
@@ -426,6 +571,7 @@ def simulate_field(
     rival_policy: RivalPolicy = "sim_pace",
     align: RandomAlignment | None = None,
     capture: bool = False,
+    caution_regimes: dict[int, str] | None = None,
 ) -> SimulationResult:
     """Project every running driver to ``to_lap`` under their given plan.
 
@@ -439,6 +585,11 @@ def simulate_field(
         to_lap: Defaults to the scheduled race distance.
         caution_laps: Laps run under SC/VSC. **Exogenous** -- an assumption supplied by
             the caller or replayed from observation, never a prediction (Challenge 3).
+        caution_regimes: Which kind of caution each of those laps is (``sc``, ``vsc``,
+            ``vsc_ending``). A safety car costs 1.45x green pace and a VSC 1.20x, so a
+            replay that knows the difference should say so. Omitted -- which is the honest
+            case for a caution that is merely *assumed* -- every caution lap is charged the
+            blended rate instead.
         align: Declared draw sizes, so that two plans run under the same seed consume the
             same random numbers and their difference is paired. Required whenever results
             from different plans are subtracted; see ``RandomAlignment``.
@@ -497,9 +648,12 @@ def simulate_field(
 
     multiplier = np.ones(n_laps)
     if caution:
-        under = np.isin(np.arange(state.lap + 1, to_lap + 1), sorted(caution))
-        multiplier[under] = components.caution_lap_multiplier
-        lap_times[:, :, under] *= components.caution_lap_multiplier
+        projected = np.arange(state.lap + 1, to_lap + 1)
+        regimes = caution_regimes or {}
+        for i, lap in enumerate(projected):
+            if lap in caution:
+                multiplier[i] = components.caution_multiplier(regimes.get(int(lap), ""))
+        lap_times *= multiplier[None, None, :]
 
     breakdown = None
     if capture:

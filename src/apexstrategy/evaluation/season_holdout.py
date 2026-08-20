@@ -54,6 +54,7 @@ from .replay import (
     GATE_RACE_TIME_PCT,
     ReplayResult,
     _caution_laps,
+    _caution_regimes,
     _compare_laps,
     _compare_race_times,
 )
@@ -105,6 +106,7 @@ def replay_holdout_race(
         seed=seed,
         to_lap=total_laps,
         caution_laps=_caution_laps(laps[laps["lap_number"] > from_lap]),
+        caution_regimes=_caution_regimes(laps[laps["lap_number"] > from_lap]),
         rival_policy="sim_pace",
     )
     return ReplayResult(

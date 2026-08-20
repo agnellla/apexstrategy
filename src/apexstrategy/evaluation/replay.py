@@ -92,6 +92,20 @@ def _caution_laps(laps: pd.DataFrame) -> frozenset[int]:
     return frozenset(laps.loc[flagged, "lap_number"].astype(int).unique().tolist())
 
 
+def _caution_regimes(laps: pd.DataFrame) -> dict[int, str]:
+    """Which caution regime each flagged lap ran under, for the laps that had one.
+
+    A replay knows this from observation, so it should use it: charging a safety-car lap at
+    a virtual safety car's rate was worth 78% of held-out race-time bias.
+    """
+    from ..sim.engine import caution_regime
+
+    regimes = caution_regime(laps["track_status"])
+    under = regimes != "green"
+    flagged = laps.loc[under, ["lap_number"]].assign(regime=regimes[under])
+    return {int(r.lap_number): str(r.regime) for r in flagged.itertuples()}
+
+
 def _lap_category(laps: pd.DataFrame) -> pd.Series:
     """Label each lap by what dominates its time. Deliberately not ``exclusion_reason``.
 
@@ -225,6 +239,7 @@ def replay_race(
         seed=seed,
         to_lap=total_laps,
         caution_laps=_caution_laps(laps[laps["lap_number"] > from_lap]),
+        caution_regimes=_caution_regimes(laps[laps["lap_number"] > from_lap]),
         rival_policy="sim_pace",
     )
 
