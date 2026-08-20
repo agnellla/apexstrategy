@@ -50,13 +50,13 @@ SELECTED = QuadraticPaceBaseline
 
 def training_frame() -> pd.DataFrame:
     """Clean laps from trainable circuits, with the reference pace and target attached."""
-    # Derived from the store, not from the hand list of seven the project started with.
-    # That list was still the filter here after discovery replaced it everywhere else, so
-    # the persisted model was quietly trained on five circuits while forty were available.
-    laps = store.fittable_laps()
-    laps = laps[laps["circuit"].isin(store.trainable_circuits())]
-    laps = add_reference_pace(laps)
-    return laps[laps["is_clean"]].dropna(subset=[TARGET, "tyre_age"]).reset_index(drop=True)
+    # Through the canonical rule, not a local restatement of it. This filtered by
+    # *circuit*, which is the same defect the constants path had: a dry Zandvoort 2023,
+    # Silverstone 2024 and Montreal 2024 were admitted because those venues have a dry
+    # running in some other season. Conditions belong to an afternoon, not to a track, so
+    # the unit of admission is the race -- see ``store.usable_races``.
+    laps = add_reference_pace(store.fittable_laps())
+    return store.trainable_laps(laps).dropna(subset=[TARGET, "tyre_age"]).reset_index(drop=True)
 
 
 def evaluate(laps: pd.DataFrame) -> pd.DataFrame:
