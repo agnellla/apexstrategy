@@ -21,6 +21,7 @@ uv run python -m apexstrategy.evaluation.replay              # Phase 7 gate, all
 uv run python -m apexstrategy.evaluation.replay --circuits hungary --from-laps 25
 uv run python -m apexstrategy.evaluation.calibration        # Phase 8 coverage + PIT
 uv run python -m apexstrategy.evaluation.calibration_report # coverage on UNSEEN races/seasons
+uv run python -m apexstrategy.evaluation.final_report       # the frozen-architecture validation
 uv run python -m apexstrategy.evaluation.validate           # learning curves, under/overfit
 uv run python -m apexstrategy.strategy                       # Phase 9 recommendation, demo race
 uv run python -m apexstrategy.strategy --circuit austria --lap 30 --driver VER --explain
@@ -181,6 +182,25 @@ problem: it is close to the irreducible noise in a single lap time.
 What the residuals *did* justify was one specific term (D18). MAE was the wrong thing to
 look at — the systematic bias was in tyre age, it curved, and a linear-in-age model cannot
 represent a curve.
+
+### The uncertainty architecture is FROZEN (D20, 2026-08-20)
+
+Full reasoning, all breakdowns and the leakage audit: **`docs/uncertainty-architecture.md`**.
+Do not add, remove or retune a variance component without a measured out-of-sample
+calibration gain or a demonstrated implementation defect. Two were measured and rejected at
+the freeze (shared stint-level offset — double-counts the shared reference floor; shared
+degradation shift — cancels within a centred stint, so it cannot move race time).
+
+The freeze validation found no implementation defect. What it did establish:
+
+- **The dominant remaining error is point bias, not interval width**, it is
+  circuit-specific out of sample, and it is signed in *both* directions (7 severely biased
+  cells of 20, split optimistic and pessimistic). No variance model should address it.
+- **Lap-level intervals are conservative** (0.968 at nominal 0.80 out of sample) while
+  race-time intervals are right. Left alone: race time is the reported quantity, and
+  narrowing laps would risk the calibration just achieved.
+- **One variance model serves both splits** — right out of sample, too wide in sample.
+  More seasons fix that, not more components.
 
 ### Calibration on unseen seasons (D19) — the current headline
 
