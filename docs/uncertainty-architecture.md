@@ -189,6 +189,47 @@ shaping it come from other races.
 
 ---
 
+## 6a. Amendment, 2026-08-20 — wet-race leak in the constants path
+
+A defect, fixed under the freeze's implementation-bug exception. Architecture unchanged;
+only the data admitted to the fit changed.
+
+``SimComponents.fit`` filtered by **circuit** rather than by race. Because Silverstone 2023
+is dry, the derived trainable-circuit set included `britain`, which readmitted the wet
+Silverstone 2024. Four races were entering the pit-loss and noise fits: Sao Paulo 2024
+(100% wet), Montreal 2024 (66.5%), Zandvoort 2023 (24.4%), Silverstone 2024 (24.3%). This
+is D10's contamination, reintroduced through a filter that looked equivalent to the hand
+list it replaced and was not. The pace-model path (`store.training_laps`) was never
+affected.
+
+The rule now lives in one place, `store.usable_races`, because it was being restated at
+each call site and one restatement was wrong.
+
+**The contamination was inflating the variance components**, so removing it narrows them:
+
+| Component | Before | After | Change |
+|---|---|---|---|
+| lap residual sd | 0.6288 | 0.5163 | −17.9% |
+| lap residual p99.9 | 5.090 | 3.412 | −33.0% |
+| stint level sd | 0.6140 | 0.4945 | −19.5% |
+| stint slope sd | 0.1509 | 0.0601 | −60.2% |
+| race scale log-sd | 0.4276 | 0.2828 | −33.9% |
+| pit loss median | 23.33 | 23.20 | −0.5% |
+| pit loss p90 | 32.11 | 30.65 | −4.6% |
+
+Four wet races out of 44 moved the stint-slope spread by 60%, which is what a handful of
+races run on a different tyre compound in different conditions will do to a variance
+estimate.
+
+**Held-out coverage fell slightly and the intervals got *better shaped*.** 80% went 0.792 →
+0.771, but PIT sd moved 0.271 → 0.278, toward the uniform 0.289. The earlier figure was
+propped up by contaminated width: the intervals were too wide for the wrong reason and
+happened to cover. What is exposed now is the point bias that was always there — PIT mean
+0.584 → 0.592.
+
+The corrected `race_scale_log_sd` of 0.2828 also lands close to the 0.262 measured
+independently from clean out-of-fold residuals, which the contaminated 0.4276 did not.
+
 ## 7. Status: frozen
 
 The validation found **no implementation defect**. 215 tests pass. The architecture above

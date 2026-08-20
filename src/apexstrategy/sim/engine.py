@@ -233,9 +233,15 @@ class SimComponents:
         cls, pace_model: PaceModel, exclude_circuit: str | None = None, **overrides
     ) -> SimComponents:
 
+        # Race-level admission, not circuit-level. Filtering by circuit let a dry running
+        # of a venue admit a wet one: Sao Paulo 2024 (100% wet), Montreal 2024 (66.5%),
+        # Zandvoort 2023 (24.4%) and Silverstone 2024 (24.3%) were all entering the
+        # pit-loss and noise fits, which is exactly the contamination D10 excluded by hand
+        # and which put Silverstone's pit loss at 41.4 s against 19.3 s dry.
         laps = store.fittable_laps()
-        allowed = store.trainable_circuits() - {exclude_circuit}
-        laps = laps[laps["circuit"].isin(allowed)]
+        laps = laps[store.usable_races(laps)]
+        if exclude_circuit is not None:
+            laps = laps[laps["circuit"] != exclude_circuit]
 
         losses, share = fit_pit_loss(laps, pace_model)
         if losses.size < 20:

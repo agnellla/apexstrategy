@@ -130,18 +130,30 @@ def trainable_circuits(laps: pd.DataFrame | None = None) -> set[str]:
     return set(trainable_laps(laps)["circuit"].unique())
 
 
-def trainable_laps(laps: pd.DataFrame) -> pd.DataFrame:
-    """Apply the training-pool filters to a laps frame that is already in hand.
+def usable_races(laps: pd.DataFrame) -> pd.Series:
+    """Race-level admission rule: right season, dry enough, not an excluded venue.
 
-    Three filters, and only one of them is a list: the season gate (D15), the measured
-    dry-race rule that replaces D10's hand exclusion, and the venues excluded on judgement.
+    Extracted because it was being restated at each call site and one of them restated it
+    wrongly. ``SimComponents.fit`` filtered by *circuit* rather than by race, so a dry
+    Silverstone 2023 admitted a wet Silverstone 2024 into the pit-loss and noise fits --
+    which is D10's contamination, reintroduced through a filter that looked equivalent and
+    was not. A race is the unit these rules are about, because conditions are a property of
+    an afternoon and a venue is not.
     """
-    return laps[
-        laps["is_clean"]
-        & laps["season"].isin(config.TRAINING_SEASONS)
+    return (
+        laps["season"].isin(config.TRAINING_SEASONS)
         & laps["race_id"].isin(dry_race_ids(laps))
         & ~laps["circuit"].isin(EXCLUDED_VENUES)
-    ].reset_index(drop=True)
+    )
+
+
+def trainable_laps(laps: pd.DataFrame) -> pd.DataFrame:
+    """Clean laps from races the models may learn from.
+
+    The race-level admission rule plus ``is_clean``. Constants that need the excluded laps
+    -- pit loss needs the pit laps -- take ``usable_races`` directly instead.
+    """
+    return laps[usable_races(laps) & laps["is_clean"]].reset_index(drop=True)
 
 
 def fittable_laps(processed_dir: Path | None = None) -> pd.DataFrame:

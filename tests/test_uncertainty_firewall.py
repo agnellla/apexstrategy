@@ -97,6 +97,66 @@ class TestNoLeakageAcrossRaces:
         assert without.pit_loss_s.size < everything.pit_loss_s.size
 
 
+class TestNoWetRaceContamination:
+    """The constants path admits races, not circuits.
+
+    D10 excluded Silverstone 2024 by hand after measuring it at 24.3% wet, because in and
+    out laps run in damp conditions while the clean-pace reference comes from dry laps --
+    its pit loss reads 41.4 s against 19.3 s for the dry running of the same track. When the
+    hand list became a derived set, ``SimComponents.fit`` started filtering by *circuit*,
+    so a dry Silverstone 2023 silently readmitted the wet 2024 race. Four races leaked.
+
+    The pace-model path was never affected because ``store.training_laps`` filters per race.
+    These tests pin the rule at the level it belongs to, so the two paths cannot drift apart
+    again.
+    """
+
+    def test_no_non_dry_race_reaches_the_constants_fit(self) -> None:
+        laps = store.fittable_laps()
+        admitted = laps[store.usable_races(laps)]
+        dry = store.dry_race_ids(store.read_table("laps"))
+        assert set(admitted["race_id"]) <= dry, sorted(set(admitted["race_id"]) - dry)
+
+    def test_the_four_known_leaks_are_gone(self) -> None:
+        """Named individually: a rule that happens to exclude them today for some other
+        reason would still be a regression if it stopped."""
+        laps = store.fittable_laps()
+        admitted = set(laps[store.usable_races(laps)]["race_id"])
+        for race in (
+            "2024_sao_paulo_R",
+            "2024_montreal_R",
+            "2023_zandvoort_R",
+            "2024_britain_R",
+        ):
+            assert race not in admitted, race
+
+    def test_a_dry_running_of_a_wet_venue_is_still_admitted(self) -> None:
+        """The rule excludes wet *races*, not wet *tracks*. Silverstone 2023 was bone dry
+        and belongs in the pool; throwing it out with 2024 is the failure the old
+        per-circuit exclusion had."""
+        laps = store.fittable_laps()
+        admitted = set(laps[store.usable_races(laps)]["race_id"])
+        assert "2023_britain_R" in admitted
+
+    def test_the_season_gate_and_venue_exclusion_still_hold(self) -> None:
+        """The fix must not have loosened the protections it sits beside."""
+        laps = store.fittable_laps()
+        admitted = laps[store.usable_races(laps)]
+        assert set(admitted["season"]) <= set(config.TRAINING_SEASONS)
+        assert not set(admitted["season"]) & set(config.HOLDOUT_SEASONS)
+        assert not set(admitted["circuit"]) & store.EXCLUDED_VENUES
+
+    def test_the_constants_actually_come_from_dry_races_only(self, pace_model) -> None:
+        """End to end rather than on the filter alone: refit and check the pit-loss sample
+        no longer carries the wet-race tail."""
+        import numpy as np
+
+        components = SimComponents.fit(pace_model)
+        # Silverstone 2024's stops sat near 41 s; a dry-only pool should not reach there.
+        assert np.median(components.pit_loss_s) < 30.0
+        assert components.pit_loss_s.size > 500
+
+
 class TestBootstrapTail:
     """The lap level is bootstrapped, not Gaussian, and that has to stay true."""
 
