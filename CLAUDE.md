@@ -5,6 +5,22 @@ The product is the decision layer; the tyre/pace models are supporting component
 
 Full design and the running build log: **`docs/architecture-proposal.md`**. Read it before
 proposing architectural changes — it records what was already considered and rejected.
+The frozen uncertainty architecture is **`docs/uncertainty-architecture.md`**; the caution
+diagnosis and the unapproved caution spec are **`docs/caution-uncertainty.md`**.
+
+## Where things stand
+
+Baseline frozen at `1e266c0` on `phase-7-simulator-replay-gate`, **243 tests passing**,
+ruff and mypy clean. Held-out 2025: MAE 0.720 s, bias +0.268 s, coverage
+0.539 / 0.771 / 0.892, PIT 0.592 / 0.278. In-season LORO: 0.644 / 0.871 / 0.951.
+Replay gate 17/20.
+
+**In flight:** caution uncertainty, specified in `docs/caution-uncertainty.md` Part 4,
+**awaiting approval — do not implement without it**.
+
+**Branch `caution-regime-correction` is parked and must not be merged.** It implements
+per-regime caution multipliers, passed 258 tests, and *failed its acceptance criterion* by
+flipping caution bias from −11.46 s to +8.96 s. Kept as evidence, not as work in progress.
 
 ## Commands
 
@@ -48,6 +64,8 @@ Always `uv run` — there is no active venv on PATH.
 | **D11** | **The linear family ships; LightGBM does not. Re-tested at 5× the data and confirmed.** At 23 circuits / 25,429 laps: LORO MAE **0.610 vs 0.672**, worst fold **1.12 vs 2.11**, sd across folds **0.16 vs 0.35**. A grouped-fold capacity sweep makes the mechanism explicit — the GBM fits training data far better (0.35 train) and generalises worse (0.55 held-out, gap +0.20), and more capacity widens the gap. Extra capacity buys memorisation of individual races here, not transferable structure. See D18 for what *did* improve. |
 | **D12** | **Dirty-air laps stay excluded, not a covariate.** Tested fairly (fixed clean test set, only training data varied): +39% data does not improve clean-lap prediction. Columns remain in the store; revisit when product-Phase 2 needs a traffic penalty. |
 | **D15** | **2025 is a held-out season, never fitted on.** `config.TRAINING_SEASON = 2024`, `HOLDOUT_SEASONS = (2025,)`, enforced in `store.trainable_laps`/`fittable_laps` and asserted by `tests/test_season_gate.py`, not remembered at call sites. LORO within 2024 only asks the model to generalise across *circuits*; a held-out season asks it to generalise across cars, tyres and regulations, which is the question anyone deploying it would ask. **Result: 18/20 replays pass on 2024, 11/20 on 2025.** Do not report the 2024 number without the 2025 one. |
+| **D21** | **The caution MEAN is frozen. Cautions are an uncertainty-heavy regime.** No pooled, circuit-specific, regime-specific or tyre-age-interacted caution mean model is defensible. Under SC the coefficient on a car's own green pace is **−0.877 ± 0.516** (a multiplicative form needs 1.45), three different bases gave identical MAE/bias/age-slope, the per-circuit SC ratio spans **1.19–1.61** with race-to-race sd 0.135, and only **12%** of SC lap variance is "which car". Evidence in `docs/caution-uncertainty.md`. |
+| **D20** | **The uncertainty architecture is frozen** (`docs/uncertainty-architecture.md`). Seven components, four levels. Do not add, remove or retune one without a measured out-of-sample calibration gain or a demonstrated implementation defect. Two candidates were measured and rejected at the freeze: a shared stint-level offset (double-counts the shared reference floor) and a shared degradation shift (cancels within a centred stint, so it cannot move race time). |
 | **D16** | **Races are discovered from the schedule, not hand-encoded.** Keyed on FastF1's `Location` (the venue), because `EventName` is marketing and a sponsor can rename a race without moving it. Aliases exist for the seven original keys and for venue drift (`Miami`/`Miami Gardens` are one circuit). The `round_2024` encode-then-verify check is scoped to 2024: calendars reorder, and applying a 2024 belief to a 2025 session rejects correctly matched races. |
 | **D17** | **Exclusions are rules, not lists.** D10's wet-race exclusion is now a measured 5% wet-lap threshold applied per *race* — which is what D10 actually said. It reproduces the original judgement exactly (Silverstone 2024 measures 24.3%) and catches six more nobody had listed, including São Paulo 2024 at 100%. Silverstone **2023 is dry and belongs in the pool**; the old per-circuit exclusion threw it away. Monaco stays a named venue: no rule catches "pathological". |
 | **D18** | **`QuadraticPaceBaseline` ships; the linear form is superseded.** Not for MAE (0.535 vs 0.539, inside fold noise) but for **bias**: the linear form's out-of-fold error curves from −0.11 s on fresh rubber to −0.26 s past forty laps, and a model linear in tyre age cannot represent that. The quadratic flattens it to −0.001/+0.005 and wins on every fold. Per-lap it is negligible; over a stint it is the stay-out decision. **No per-circuit intercept** — `reference_pace` already absorbs constant circuit offsets (Phase 6), and adding one makes the model undefined at unseen circuits. |
@@ -69,6 +87,13 @@ Always `uv run` — there is no active venv on PATH.
   different question. Monaco 2024 lap 1 was red-flagged but is labelled `lap_1`. Deriving
   pit `under_caution` from it silently mislabelled 16 red-flag stops as green-flag. Read
   `track_status` directly for caution state.
+- **The training-data rule is race-level, and it lives in `store.usable_races` — do not
+  restate it.** It has been restated locally three times and got it wrong twice, the same
+  way each time: filtering by *circuit* instead of by *race*, so a dry running of a venue
+  readmitted a wet one. Conditions belong to an afternoon; a track is not wet. The failure
+  is silent — the wrong filter trains without error and shows up only as inflated variance
+  components or a degradation curve fitted partly on intermediates. Silverstone 2024 at
+  24.3% wet put its pit loss at 41.4 s against 19.3 s dry.
 - **Leakage is prevented structurally, not detected.** `RaceState` (Phase 6) is built from
   a frame truncated at lap L, so it cannot contain future data. The same discipline applies
   across seasons (D15): every model-facing reader goes through `store.fittable_laps` /
@@ -183,6 +208,30 @@ What the residuals *did* justify was one specific term (D18). MAE was the wrong 
 look at — the systematic bias was in tyre age, it curved, and a linear-in-age model cannot
 represent a curve.
 
+### Cautions: what is measured, and what must not be attempted (D21)
+
+The simulator carries **1.25 s** of spread on a caution lap whose observed within-car sd is
+**11.43 s** — about 11% — and none of the race-level severity variation. That is the open
+gap, and it is an *uncertainty* gap.
+
+Measured variance hierarchy, `(race, lap)` cells with ≥4 cars:
+
+| Level | Safety car | VSC |
+|---|---|---|
+| race | 11.11 s (47.3%) | 4.83 s (23.9%) |
+| race × lap | 9.72 s (36.2%) | 6.88 s (48.6%) |
+| driver × lap | 6.57 s (16.5%) | 5.18 s (27.5%) |
+| **total** | **16.15 s** | **9.87 s** |
+
+**Intraclass correlation 0.835 (SC) / 0.725 (VSC): a caution lap is a shared event.**
+Sampling it independently per driver would be structurally wrong. Caution residuals are
+mildly *left*-skewed (SC −0.50) where green laps are strongly right-skewed (+6.05), so the
+green bootstrap is wrong for cautions in scale and in sign.
+
+**Do not re-derive these.** Fitted multipliers, for reference only: SC 1.4504, VSC 1.2003,
+VSC-ending 1.0310; caution pit multiplier 0.5789 against the assumed 0.45. They are
+*measured*, and D21 says they must not be adopted as a mean model anyway.
+
 ### The uncertainty architecture is FROZEN (D20, 2026-08-20)
 
 Full reasoning, all breakdowns and the leakage audit: **`docs/uncertainty-architecture.md`**.
@@ -284,6 +333,12 @@ the conclusions that are expensive to rediscover:
   decision lap, so an immediate stop (the undercut, D4) is representable.
   `Scenario.is_legal` is used for the two-compound rule only; its first-stint bound is the
   wrong constraint here and a test pins the divergence.
+- **Check the population before believing a discrepancy.** A +2.60 s training-LORO caution
+  bias and a +8.96 s held-out one looked like a pipeline defect and were not: tracing 496
+  identical laps showed the replay pipeline contributes −0.322 s, decomposing exactly into
+  reference estimation, scheduled-vs-observed μ, and the progress term. The rest was a
+  15-race average compared against a 2-race average from a distribution with sd 12.93 s.
+  Speculation about the mechanism was measured and found wrong.
 - **"The engine disagrees with what the team did" is not a validation.** It is one-sided
   by construction (the baseline is one of the candidates), the executed plan is sometimes
   a damage stop rather than a strategy, and counterfactuals are unobservable in principle.

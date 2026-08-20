@@ -1721,3 +1721,70 @@ and the entire site rendered in Times.
 
 The Hungary 2024 post-race audit (D4): the McLaren undercut-and-swap-back as a narrative
 walk-through of the same decision surface, lap by lap.
+
+
+### Phase 12 — mean-model audit and caution diagnosis (2026-08-20). **No mean change adopted.**
+
+Full detail: **`docs/caution-uncertainty.md`**. Summary of what changed and what did not.
+
+#### Three data-policy defects found and fixed
+
+The same rule had been restated in three places and two of them were wrong: filtering by
+*circuit* rather than by *race*, so a dry running of a venue readmitted a wet one.
+
+| Site | Leaked | Fixed in |
+|---|---|---|
+| `SimComponents.fit` | Sao Paulo 2024 (100% wet), Montreal 2024, Zandvoort 2023, Silverstone 2024 | `e6c0fd2` |
+| `train.training_frame` | Zandvoort 2023, Silverstone 2024, Montreal 2024 | `8c4e28d` |
+| `replay.loro_pace_model` | same three, in every fold | `1e266c0` |
+
+The rule now lives once, in `store.usable_races`. Effects:
+
+- Constants path: lap residual sd −17.9%, its 99.9th percentile −33.0%, stint slope sd
+  −60.2%, race scale −33.9%. Held-out 80% coverage 0.792 → 0.771 while PIT sd moved
+  0.271 → 0.278, *toward* uniform. The old figure was propped up by contaminated width.
+- Pace model: soft-tyre degradation was +0.0153 s/lap, implausibly flat for a soft, because
+  mixed-condition races contribute slick laps on a drying track where the tyre appears to
+  improve with age. Corrected to +0.1493 with a −0.00306 quadratic. `train.py`'s own LORO
+  MAE 0.6104 → 0.5604, worst fold 1.1177 → 0.7980.
+- LORO folds: clean-lap MAE 0.9199 → 0.8972, PIT sd 0.2436 → 0.2371.
+
+#### The mean model is defensible; cautions are not
+
+Component audit found the clean-lap mean essentially unbiased — compound bias ≤0.007 s,
+tyre-age bias ~0 out to 30 laps after D18. Circuit offsets self-cancel because
+`reference_pace` is estimated by inverting the model.
+
+**78% of held-out race-time bias sits on caution laps**, at −11.46 s per lap, from a
+multiplier of 1.21 fitted on 27 laps of a single VSC.
+
+A scoped correction was implemented, failed its acceptance criterion, and is parked on
+branch `caution-regime-correction` (**do not merge**). It flipped the caution bias from
+−11.46 s to +8.96 s.
+
+The diagnosis that followed is the durable result:
+
+- Caution lap time is **not proportional to car pace** — under SC the coefficient on the
+  car's own green baseline is −0.877 ± 0.516, against the 1.45 a multiplicative form needs.
+- **Changing the basis fixes nothing.** Three formulations gave identical MAE, bias and
+  age-slope; they differ by 1–2 s while the residual sd is ~17 s.
+- **The multiplier is not a stable quantity.** Per-circuit SC ratio spans 1.19 to 1.61,
+  race-to-race sd 0.135, per-race LORO residuals −17.05 s to +21.48 s.
+- **Only 12% of SC lap variance is "which car."** 52% is lap-to-lap within one car.
+
+#### A methodological error worth remembering
+
+The apparent conflict between a +2.60 s training-LORO caution bias and a +8.96 s held-out
+one was **not** a pipeline defect. Tracing 496 identical laps through both, the replay
+pipeline contributes −0.322 s, decomposing exactly into reference estimation (−0.122),
+scheduled-vs-observed μ (−0.240) and the progress term (+0.040). The rest was comparing a
+15-race average with a 2-race average drawn from a distribution with sd 12.93 s: the
+held-out figure sits 0.48 standard errors from the training mean. An earlier speculative
+explanation was measured and found wrong.
+
+### Phase 13 — next
+
+Caution uncertainty, specified in `docs/caution-uncertainty.md` Part 4 and **awaiting
+approval**. Uncertainty-only: the caution mean stays frozen. The simulator currently
+carries 1.25 s of spread on a lap whose observed within-car sd is 11.43 s, and none of the
+race-level severity variation.
