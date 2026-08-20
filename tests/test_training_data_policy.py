@@ -70,3 +70,58 @@ class TestPaceModelTrainingData:
         canonical = canonical.dropna(subset=[TARGET, "tyre_age"])
         assert set(frame["race_id"]) == set(canonical["race_id"])
         assert len(frame) == len(canonical)
+
+
+class TestLeaveOneRaceOutTrainingData:
+    """LORO folds obey the same admission rule as everything else.
+
+    ``loro_pace_model`` was the third local restatement of the policy and, like the other
+    two, filtered by circuit rather than by race. That conflated two different exclusions:
+    holding out the circuit under test, which is what LORO means, and excluding wet races,
+    which is a data-quality rule. A dry running of a venue therefore readmitted a wet one
+    into every fold.
+    """
+
+    @pytest.mark.parametrize("held_out", ["hungary", "suzuka", "britain"])
+    def test_no_wet_race_enters_a_fold(self, held_out: str) -> None:
+        dry = store.dry_race_ids(store.read_table("laps"))
+        assert set(_fold(held_out)["race_id"]) <= dry
+
+    @pytest.mark.parametrize("held_out", ["hungary", "suzuka", "bahrain"])
+    def test_the_held_out_circuit_is_absent_from_its_own_fold(self, held_out: str) -> None:
+        """The exclusion that makes it leave-one-race-out at all. Circuit constants leak
+        exactly like model weights (Part 13, risk 5)."""
+        fold = _fold(held_out)
+        assert held_out not in set(fold["circuit"])
+        assert not fold["race_id"].str.contains(held_out).any()
+
+    def test_holding_out_a_circuit_removes_only_that_circuit(self) -> None:
+        """A fold must lose the held-out circuit and nothing else, or the exclusion is
+        quietly doing a second job."""
+        every = set(_fold(None)["race_id"])
+        without = set(_fold("hungary")["race_id"])
+        removed = every - without
+        assert removed, "holding out hungary must remove something"
+        assert all("hungary" in r for r in removed), sorted(removed)
+
+    def test_the_fold_is_the_canonical_rule_minus_one_circuit(self) -> None:
+        """The rule is applied, not reimplemented: a fold equals the canonical trainable
+        set with one circuit dropped, exactly."""
+        from apexstrategy.models.pace import TARGET, add_reference_pace
+
+        canonical = store.trainable_laps(add_reference_pace(store.fittable_laps()))
+        canonical = canonical[canonical["circuit"] != "suzuka"]
+        canonical = canonical.dropna(subset=[TARGET, "tyre_age"])
+        assert set(_fold("suzuka")["race_id"]) == set(canonical["race_id"])
+        assert len(_fold("suzuka")) == len(canonical)
+
+
+def _fold(held_out: str | None) -> pd.DataFrame:
+    """The laps a LORO fold trains on, built the way ``loro_pace_model`` builds them."""
+    from apexstrategy.models.pace import TARGET, add_reference_pace
+
+    laps = add_reference_pace(store.fittable_laps())
+    train = store.trainable_laps(laps)
+    if held_out is not None:
+        train = train[train["circuit"] != held_out]
+    return train.dropna(subset=[TARGET, "tyre_age"])

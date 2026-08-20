@@ -110,12 +110,21 @@ def _lap_category(laps: pd.DataFrame) -> pd.Series:
 
 
 def loro_pace_model(circuit: str):
-    """Fit the selected pace model on every trainable circuit except ``circuit``."""
-    laps = store.fittable_laps()
-    allowed = store.trainable_circuits() - {circuit}
-    laps = laps[laps["circuit"].isin(allowed)]
-    laps = add_reference_pace(laps)
-    train = laps[laps["is_clean"]].dropna(subset=[TARGET, "tyre_age"])
+    """Fit the selected pace model on every usable race except those at ``circuit``.
+
+    Two exclusions doing different jobs, and they must not be conflated. The circuit is
+    held out because that is what leave-one-race-out means. The *race-level* rule --
+    training season, dry enough, not an excluded venue -- comes from ``store`` because it
+    is the same policy the rest of the project applies, and this was the third place to
+    restate it locally and get it wrong.
+
+    The local version filtered by circuit for both jobs, so a dry running of a venue
+    readmitted a wet one: Zandvoort 2023, Silverstone 2024 and Montreal 2024 were training
+    every fold. Conditions belong to an afternoon, not to a track.
+    """
+    laps = add_reference_pace(store.fittable_laps())
+    train = store.trainable_laps(laps)
+    train = train[train["circuit"] != circuit].dropna(subset=[TARGET, "tyre_age"])
     return SELECTED().fit(feature_frame(train), train[TARGET])
 
 
